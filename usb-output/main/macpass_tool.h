@@ -1,3 +1,4 @@
+#pragma once
 
 #define BYTE_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c"
 
@@ -163,7 +164,9 @@ static inline void set_mouse_movement_to_report(hid_mouse_report_t* dst, const h
 }
 
 static inline void reset_sequence(key_modification_sequence_t* sequence){
-    esp_timer_stop(sequence->timer);
+    if (sequence->timer) {
+        esp_timer_stop(sequence->timer);
+    }
     sequence->pos = 0;
     sequence->previous_key.header = 0;
     sequence->started_time = esp_timer_get_time();
@@ -178,6 +181,9 @@ static inline void start_sequence(key_modification_sequence_t* sequence){
     // Add waiting time to sum history.
     sequence->waited_sum += sequence->list[sequence->pos].duration;
     // Verify that the target has not been missed.
+    if (!sequence->timer) {
+        return;
+    }
     if (target > now) {
         esp_timer_start_once(sequence->timer, target - now);
     } else {

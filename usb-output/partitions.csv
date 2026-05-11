@@ -1,0 +1,11 @@
+# If logs show "spiffs partition could not be found", the table ON THE CHIP is wrong or flash is too small.
+# 1) menuconfig: Partition Table = Custom, Custom CSV = partitions.csv; Serial flasher = correct flash size.
+# 2) Close serial monitor, then from usb-output/:  idf.py erase-flash partition-table-flash flash
+#    (erase clears stale table; partition-table-flash writes this CSV; flash writes app+bootloader.)
+# On 2 MB flash: factory + storage must end at 0x200000; factory below is ~1.73 MB + 256 KB SPIFFS.
+# If the app grows past factory size, increase flash size in menuconfig or shrink SPIFFS.
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,     0xf000,  0x1000,
+factory,  app,  factory, 0x10000, 0x1B0000,
+storage,  data, spiffs,  ,        0x40000,

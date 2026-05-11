@@ -1,0 +1,52 @@
+{
+  "v": 2,
+  "name": "example-v2-multiscript",
+  "macrosOn": true,
+  "activeScript": 0,
+  "nextScript": { "mouse": { "b": 4 } },
+  "toggleMacros": { "mouse": { "b": 6 } },
+  "scripts": [
+    {
+      "name": "rifle",
+      "groups": [
+        {
+          "comment": "Hold right: tiny horizontal wiggle while held",
+          "steps": [
+            { "us": 8000, "mouse": { "x": 2, "y": 0 } },
+            { "us": 8000, "mouse": { "x": -2, "y": 0 } }
+          ],
+          "n": 2,
+          "loop": true,
+          "press": { "mouse": { "b": 2 } }
+        },
+        {
+          "comment": "Hold left+right together: box pattern while both are held",
+          "steps": [
+            { "us": 7000, "mouse": { "x": 2, "y": 0 } },
+            { "us": 7000, "mouse": { "x": 0, "y": 2 } },
+            { "us": 7000, "mouse": { "x": -2, "y": 0 } },
+            { "us": 7000, "mouse": { "x": 0, "y": -2 } }
+          ],
+          "n": 4,
+          "loop": true,
+          "press": { "mouse": { "b": 3 } }
+        }
+      ]
+    },
+    {
+      "name": "smg",
+      "groups": [
+        {
+          "comment": "Hold left: small down-left drift while held",
+          "steps": [
+            { "us": 5000, "mouse": { "x": -1, "y": 1 } },
+            { "us": 5000, "mouse": { "x": -1, "y": 1 } }
+          ],
+          "n": 2,
+          "loop": true,
+          "press": { "mouse": { "b": 1 } }
+        }
+      ]
+    }
+  ]
+}

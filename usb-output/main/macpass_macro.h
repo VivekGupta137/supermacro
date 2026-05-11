@@ -1,3 +1,4 @@
+#pragma once
 
 // Define size of sequence structure. Set as lower as possible. Can impact performance.
 #define HISTORY_SIZE 2
@@ -32,7 +33,10 @@ typedef struct {
     key_modification_sequence_t list[MAX_KEY_MODIFICATION_SEQUENCE];
 } group_sequence_t;
 
+extern group_sequence_t group_sequence;
+
 bool macro_prehook_transmission(hid_transmit_t* report);
 void macro_posthook_transmission(hid_transmit_t* report);
 void macro_sequence_callback(void* arg);
-void macro_init();
+void macro_init(void);
+void macro_sequences_apply(const group_sequence_t *src);

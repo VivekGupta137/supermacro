@@ -1,0 +1,79 @@
+menu "Macro profile / web UI"
+
+    config MACRO_WEB_UI
+        bool "Enable Wi-Fi and HTTP profile upload"
+        default n
+        select ESP_WIFI_ENABLED
+        select HTTPD_WS_SUPPORT
+        help
+            Mounts SPIFFS on partition "storage", starts Wi-Fi, serves minimal web UI.
+            After enabling this, open the submenu "Wi-Fi and profile settings" below to choose
+            SoftAP vs Station and set credentials.
+            Requires a custom partition table with a SPIFFS "storage" partition.
+
+    menu "Wi-Fi and profile settings"
+        depends on MACRO_WEB_UI
+
+        choice MACRO_WIFI_ROLE
+            prompt "Wi-Fi role"
+            default MACRO_WIFI_ROLE_SOFTAP
+            help
+                SoftAP: phone/PC connects to the ESP (no router needed).
+                Station: ESP joins your home router; open the logged URL from any device on the same LAN.
+
+            config MACRO_WIFI_ROLE_SOFTAP
+                bool "SoftAP (ESP is the access point)"
+
+            config MACRO_WIFI_ROLE_STA
+                bool "Station (ESP joins main router)"
+        endchoice
+
+        config MACRO_WIFI_STA_SSID
+            string "Router SSID (Station mode only)"
+            depends on MACRO_WIFI_ROLE_STA
+            default "mywifi"
+
+        config MACRO_WIFI_STA_PASSWORD
+            string "Router password (Station mode only, empty = open network)"
+            depends on MACRO_WIFI_ROLE_STA
+            default ""
+
+        config MACRO_WIFI_STA_HOSTNAME
+            string "DHCP hostname on LAN (optional, Station only)"
+            depends on MACRO_WIFI_ROLE_STA
+            default "supermacro"
+            help
+                Sets the DHCP client hostname (visible on many routers). This build does not enable mDNS .local.
+
+        config MACRO_WIFI_AP_SSID
+            string "SoftAP SSID (SoftAP mode only)"
+            depends on MACRO_WIFI_ROLE_SOFTAP
+            default "MacroPassthrough"
+
+        config MACRO_WIFI_AP_PASSWORD
+            string "SoftAP password (WPA2 min 8 chars; SoftAP mode only)"
+            depends on MACRO_WIFI_ROLE_SOFTAP
+            default "macro1234"
+
+        config MACRO_WIFI_AP_CHANNEL
+            int "SoftAP channel (SoftAP mode only)"
+            depends on MACRO_WIFI_ROLE_SOFTAP
+            default 1
+            range 1 13
+
+        config MACRO_SPIFFS_MOUNT
+            string "SPIFFS mount path"
+            default "/spiffs"
+
+        config MACRO_PROFILE_JSON
+            string "Profile JSON filename under SPIFFS mount"
+            default "profile.json"
+
+        config MACRO_PROFILE_MAX_SIZE
+            int "Max profile JSON size (bytes)"
+            default 65536
+            range 4096 1048576
+
+    endmenu
+
+endmenu

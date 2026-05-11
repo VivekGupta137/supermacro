@@ -1,27 +1,76 @@
 // Import global project config
 #include "config.h"
 
+#include "macro_profile.h"
+
+#include <string.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 hid_keyboard_report_t last_keyboard_report[HISTORY_SIZE];
 hid_mouse_report_t last_mouse_report;
 group_sequence_t group_sequence;
 
-void macro_init(){
-    // Copy sequence
-    group_sequence = macro_sequence;
-    // For each macro sequence define by the user
-    for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++){
-        key_modification_sequence_t* sequence = &group_sequence.list[i];
-        // Ignore empty sequence
-        if (sequence->size == 0) continue;
-        // Set callback
+static SemaphoreHandle_t s_seq_mux;
+
+static void macro_seq_mux_init(void)
+{
+    if (s_seq_mux == NULL) {
+        s_seq_mux = xSemaphoreCreateMutex();
+    }
+}
+
+static void macro_sequence_teardown_timers(void)
+{
+    for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++) {
+        key_modification_sequence_t *sequence = &group_sequence.list[i];
+        if (sequence->timer != NULL) {
+            esp_timer_stop(sequence->timer);
+            esp_timer_delete(sequence->timer);
+            sequence->timer = NULL;
+        }
+        if (sequence->timer_args.name != NULL) {
+            free((void *)sequence->timer_args.name);
+            sequence->timer_args.name = NULL;
+        }
+    }
+}
+
+static void macro_sequence_install_timers(void)
+{
+    for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++) {
+        key_modification_sequence_t *sequence = &group_sequence.list[i];
+        if (sequence->size == 0) {
+            continue;
+        }
+        if (sequence->timer != NULL) {
+            continue;
+        }
         sequence->timer_args.callback = &macro_sequence_callback;
         sequence->timer_args.arg = &group_sequence.list[i];
-        sequence->timer_args.name = malloc(15*sizeof(char));
-        snprintf((char*)sequence->timer_args.name, 15, "sequence%d", i);
-
-        // Instanciate an ESP timer
+        sequence->timer_args.name = malloc(15 * sizeof(char));
+        snprintf((char *)sequence->timer_args.name, 15, "sequence%d", i);
         esp_timer_create(&sequence->timer_args, &sequence->timer);
     }
+}
+
+void macro_init(void)
+{
+    macro_seq_mux_init();
+    macro_sequence_install_timers();
+}
+
+void macro_sequences_apply(const group_sequence_t *src)
+{
+    macro_seq_mux_init();
+    /* Tear down timers without holding s_seq_mux so esp_timer_stop() can wait for any
+     * in-flight callback; the callback only takes the mutex around its short group_sequence loop. */
+    macro_sequence_teardown_timers();
+    xSemaphoreTake(s_seq_mux, portMAX_DELAY);
+    memcpy(&group_sequence, src, sizeof(group_sequence_t));
+    macro_sequence_install_timers();
+    xSemaphoreGive(s_seq_mux);
 }
 
 // Prehook for macro HID transmission. Return true to end transmission chain. Default to false.
@@ -68,13 +117,24 @@ void macro_posthook_transmission(hid_transmit_t* report){
         // --- START USER CUSTOM MACRO
         // --- END
 
+#if CONFIG_MACRO_WEB_UI
+        macro_profile_try_action_hotkeys(&last_keyboard_report[1], &last_keyboard_report[0],
+                                         &last_mouse_report, &last_mouse_report);
+#endif
+        macro_seq_mux_init();
+        xSemaphoreTake(s_seq_mux, portMAX_DELAY);
         // Manage sequence start:
         for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++){
             key_modification_sequence_t* sequence = &group_sequence.list[i];
             // Ignore empty sequence
             if (sequence->size == 0) break;
+            if (!macro_profile_macros_enabled()) {
+                continue;
+            }
             // If a press key is defined for sequence
-            if (sequence->event_press.header == HEADER_HID_KEYBOARD && keyboard_report_contains_event(last_keyboard_report[0], sequence->event_press.event.keyboard)){
+            if (sequence->event_press.header == HEADER_HID_KEYBOARD &&
+                keyboard_report_contains_event(last_keyboard_report[0], sequence->event_press.event.keyboard) &&
+                !keyboard_report_contains_event(last_keyboard_report[1], sequence->event_press.event.keyboard)){
                 #if DEBUG_LOG
                 ESP_LOGI(pcTaskGetName(NULL), "posthook(): Starting keyboard press macro: %s", sequence->timer_args.name);
                 #endif
@@ -105,21 +165,34 @@ void macro_posthook_transmission(hid_transmit_t* report){
                 sequence->is_recording = true;
             }
         }
+        xSemaphoreGive(s_seq_mux);
     // Case n°2: Mouse HID
     } else if (report->header == HEADER_HID_MOUSE){
+        hid_mouse_report_t prev_mouse = last_mouse_report;
         // Update last report transmission, like this all macro are added to real keys press by user
         last_mouse_report = report->event.mouse;
 
         // --- START USER CUSTOM MACRO
         // --- END
 
+#if CONFIG_MACRO_WEB_UI
+        macro_profile_try_action_hotkeys(&last_keyboard_report[1], &last_keyboard_report[0], &prev_mouse,
+                                         &last_mouse_report);
+#endif
+        macro_seq_mux_init();
+        xSemaphoreTake(s_seq_mux, portMAX_DELAY);
         // Manage sequence start:
         for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++){
             key_modification_sequence_t* sequence = &group_sequence.list[i];
             // Ignore empty sequence
             if (sequence->size == 0) break;
+            if (!macro_profile_macros_enabled()) {
+                continue;
+            }
             // If a press key is defined for sequence
-            if (sequence->event_press.header == HEADER_HID_MOUSE && mouse_report_contains_event(last_mouse_report, sequence->event_press.event.mouse)){
+            if (sequence->event_press.header == HEADER_HID_MOUSE &&
+                mouse_report_contains_event(last_mouse_report, sequence->event_press.event.mouse) &&
+                !mouse_report_contains_event(prev_mouse, sequence->event_press.event.mouse)){
                 #if DEBUG_LOG
                 ESP_LOGI(pcTaskGetName(NULL), "posthook(): Starting mouse press macro: %s", sequence->timer_args.name);
                 #endif
@@ -127,12 +200,17 @@ void macro_posthook_transmission(hid_transmit_t* report){
                 start_sequence(sequence);
             }
         }
+        xSemaphoreGive(s_seq_mux);
     }
 }
 
 void macro_sequence_callback(void* arg) {
     // Get the key sequence from arguments
     key_modification_sequence_t* key_seq = (key_modification_sequence_t*) arg;
+    if (!macro_profile_macros_enabled()) {
+        reset_sequence(key_seq);
+        return;
+    }
     hid_transmit_t macro_event = key_seq->list[key_seq->pos].event;
     // Copy last humain HID report...
     hid_transmit_t copy_report;
@@ -153,6 +231,8 @@ void macro_sequence_callback(void* arg) {
     // ... and add the custom key to the sequence previous key.
     key_seq->previous_key = macro_event;
     // Previous key of all sequence are added to copy report to send: all sequences can run in parallel
+    macro_seq_mux_init();
+    xSemaphoreTake(s_seq_mux, portMAX_DELAY);
     for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++){
         key_modification_sequence_t* sequence = &group_sequence.list[i];
         // Ignore empty sequence
@@ -162,6 +242,7 @@ void macro_sequence_callback(void* arg) {
         // Add the keycode to report
         add_event_to_report(&copy_report, sequence->previous_key);
     }
+    xSemaphoreGive(s_seq_mux);
     // In case of mouse, add mouvement to report
     if (macro_event.header == HEADER_HID_MOUSE) set_mouse_movement_to_report(&copy_report.event.mouse, macro_event.event.mouse);
 
