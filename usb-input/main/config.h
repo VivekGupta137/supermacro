@@ -30,3 +30,7 @@
 
 // Enable debug log, (it impacts performance)
 #define DEBUG_LOG 0
+
+// Throttled HID input stats only (one line per window); independent of DEBUG_LOG
+#define USB_INPUT_PERF_LOG_ENABLE 1
+#define USB_INPUT_PERF_LOG_WINDOW_MS 1000

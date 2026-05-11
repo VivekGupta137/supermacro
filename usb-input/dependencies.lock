@@ -16,7 +16,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.5.0
+    version: 5.5.1
 direct_dependencies:
 - espressif/usb_host_hid
 manifest_hash: 3f0d0dd25700460bfe74311e77f73192af636022a66ce2fe9739c654bb0579e7

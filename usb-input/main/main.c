@@ -3,7 +3,7 @@
 
 void app_main(void)
 {
-    ESP_LOGI(LOG_TITLE, "Starting -MacroPassthrough- application");
+    ESP_LOGI(LOG_TITLE, "Starting USB Input");
 
     // Initialize USB Host lib
     usb_init();
@@ -13,7 +13,8 @@ void app_main(void)
     spi_init_slave_pc_receiver();
 
     // Leave main() in background
-    while (true) {
+    while (true)
+    {
         vTaskDelay(portMAX_DELAY);
     }
 }

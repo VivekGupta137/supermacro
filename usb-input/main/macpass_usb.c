@@ -1,5 +1,6 @@
 // Import global project config
 #include "config.h"
+#include "perf_log.h"
 
 static const char *hid_proto_name_str[] = {
     "NONE",
@@ -12,6 +13,43 @@ QueueHandle_t hid_event_queue = NULL;
 #if DEBUG_LOG
 int64_t report_time;
 #endif
+#if USB_INPUT_PERF_LOG_ENABLE
+static int64_t mouse_pkt_log_last_us = 0;
+#endif
+
+static inline int8_t clamp_i16_to_i8(int32_t v){
+    if (v > 127) return 127;
+    if (v < -127) return -127;
+    return (int8_t)v;
+}
+
+static void spi_send_mouse_boot_compatible(const uint8_t *data, size_t data_length){
+    hid_report_t report = {0};
+    if (data_length < 3) {
+        return;
+    }
+
+    // DeathAdder V3 MI_00 report descriptor (8-byte packet):
+    // byte0 buttons(5 bits), byte1..2 vendor, byte3 wheel, byte4..5 x(int16), byte6..7 y(int16)
+    if (data_length >= 8) {
+        report.mouse.buttons = data[0] & 0x1F;
+        report.mouse.wheel = (int8_t)data[3];
+        int32_t x16 = (int16_t)((uint16_t)data[4] | ((uint16_t)data[5] << 8));
+        int32_t y16 = (int16_t)((uint16_t)data[6] | ((uint16_t)data[7] << 8));
+        report.mouse.x = clamp_i16_to_i8(x16);
+        report.mouse.y = clamp_i16_to_i8(y16);
+        report.mouse.pan = 0;
+    } else {
+        // Generic boot fallback: buttons, x, y, optional wheel.
+        report.mouse.buttons = data[0] & 0x1F;
+        report.mouse.x = (int8_t)data[1];
+        report.mouse.y = (int8_t)data[2];
+        report.mouse.wheel = (data_length >= 4) ? (int8_t)data[3] : 0;
+        report.mouse.pan = 0;
+    }
+
+    spi_send_master_hid_sender(HEADER_HID_MOUSE, &report);
+}
 
 /**
  * @brief USB HID Host interface callback
@@ -28,6 +66,21 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle, con
     switch (event) {
         case HID_HOST_INTERFACE_EVENT_INPUT_REPORT:
             ESP_ERROR_CHECK(hid_host_device_get_raw_input_report_data(hid_device_handle, data, sizeof(data), &data_length));
+            perf_hid_input_report((uint8_t)dev_params.proto);
+            #if USB_INPUT_PERF_LOG_ENABLE
+            if (dev_params.proto == HID_PROTOCOL_MOUSE) {
+                int64_t now_us = esp_timer_get_time();
+                if (mouse_pkt_log_last_us == 0 || (now_us - mouse_pkt_log_last_us) >= ((int64_t)USB_INPUT_PERF_LOG_WINDOW_MS * 1000)) {
+                    uint8_t b0 = (data_length > 0) ? data[0] : 0;
+                    uint8_t b1 = (data_length > 1) ? data[1] : 0;
+                    uint8_t b2 = (data_length > 2) ? data[2] : 0;
+                    uint8_t b3 = (data_length > 3) ? data[3] : 0;
+                    ESP_LOGI(LOG_TITLE, "mouse pkt: len=%u b0=%02X b1=%02X b2=%02X b3=%02X",
+                             (unsigned)data_length, b0, b1, b2, b3);
+                    mouse_pkt_log_last_us = now_us;
+                }
+            }
+            #endif
             #if DEBUG_LOG
             ESP_LOGI(LOG_TITLE, "HID Report subclass: %d, proto %d, size: %d", dev_params.sub_class, dev_params.proto, data_length);
             #endif
@@ -36,19 +89,29 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle, con
             #if DEBUG_LOG
             if (data_length==0) break;
             #endif
-            if (HID_SUBCLASS_BOOT_INTERFACE == dev_params.sub_class) {
-                // Keyboard report
-                if (HID_PROTOCOL_KEYBOARD == dev_params.proto) {
-                    #if DEBUG_LOG
-                    if (keycode_contains_key(*((hid_keyboard_report_t*)data), HID_KEY_CAPS_LOCK)){
-                        report_time = esp_timer_get_time();
-                    }
-                    #endif
-                    spi_send_master_hid_sender(HEADER_HID_KEYBOARD, (hid_report_t*)data);
-                // Mouse report
-                } else if (HID_PROTOCOL_MOUSE == dev_params.proto) {
-                    spi_send_master_hid_sender(HEADER_HID_MOUSE, (hid_report_t*)data);
+            /*
+             * usb-output expects the same hid_report_t layout (boot keyboard + boot mouse:
+             * buttons, int8 x, int8 y, wheel, pan). Report-protocol vendor packets must not
+             * be memcpy'd into that struct — wrong layout reads as horizontal-only / jitter.
+             */
+            if (HID_SUBCLASS_BOOT_INTERFACE != dev_params.sub_class) {
+                break;
+            }
+            if (HID_PROTOCOL_KEYBOARD == dev_params.proto) {
+                #if DEBUG_LOG
+                if (keycode_contains_key(*((hid_keyboard_report_t*)data), HID_KEY_CAPS_LOCK)){
+                    report_time = esp_timer_get_time();
                 }
+                #endif
+                hid_report_t report = {0};
+                size_t copy_len = data_length;
+                if (copy_len > sizeof(hid_keyboard_report_t)) {
+                    copy_len = sizeof(hid_keyboard_report_t);
+                }
+                memcpy(&report.keyboard, data, copy_len);
+                spi_send_master_hid_sender(HEADER_HID_KEYBOARD, &report);
+            } else if (HID_PROTOCOL_MOUSE == dev_params.proto) {
+                spi_send_mouse_boot_compatible(data, data_length);
             }
             break;
         case HID_HOST_INTERFACE_EVENT_DISCONNECTED:
@@ -98,16 +161,24 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle, const hid
         ESP_LOGI(LOG_TITLE, "DEBUG: handle=%p, sub_class=%d, proto=%d", hid_device_handle, dev_params.sub_class, dev_params.proto);
         #endif
         if (HID_SUBCLASS_BOOT_INTERFACE == dev_params.sub_class) {
-            #if DEBUG_LOG
-            ESP_LOGI(LOG_TITLE, "DEBUG: Attempting to set BOOT protocol");
-            #endif
-            esp_err_t proto_ret = hid_class_request_set_protocol(hid_device_handle, HID_REPORT_PROTOCOL_BOOT);
-            if (proto_ret != ESP_OK) {
-                ESP_LOGE(LOG_TITLE, "Set BOOT protocol failed: %s", esp_err_to_name(proto_ret));
-            }
             if (HID_PROTOCOL_KEYBOARD == dev_params.proto) {
+                #if DEBUG_LOG
+                ESP_LOGI(LOG_TITLE, "DEBUG: Set KEYBOARD BOOT protocol");
+                #endif
+                esp_err_t proto_ret = hid_class_request_set_protocol(hid_device_handle, HID_REPORT_PROTOCOL_BOOT);
+                if (proto_ret != ESP_OK) {
+                    ESP_LOGE(LOG_TITLE, "Set BOOT protocol failed: %s", esp_err_to_name(proto_ret));
+                }
                 usb_keyboard_handle = hid_device_handle;
                 ESP_ERROR_CHECK(hid_class_request_set_idle(hid_device_handle, 0, 0));
+            } else if (HID_PROTOCOL_MOUSE == dev_params.proto) {
+                #if DEBUG_LOG
+                ESP_LOGI(LOG_TITLE, "DEBUG: Set MOUSE REPORT protocol");
+                #endif
+                esp_err_t proto_ret = hid_class_request_set_protocol(hid_device_handle, HID_REPORT_PROTOCOL_REPORT);
+                if (proto_ret != ESP_OK) {
+                    ESP_LOGW(LOG_TITLE, "Set REPORT protocol failed: %s", esp_err_to_name(proto_ret));
+                }
             }
         }
         ESP_ERROR_CHECK(hid_host_device_start(hid_device_handle));
