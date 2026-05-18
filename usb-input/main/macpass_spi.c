@@ -80,6 +80,7 @@ void spi_task_slave_pc_receiver(void *pvParameters){
     while(true){
         // Clear the buffer for new transaction
         memset(spi_pc_buffer, 0, sizeof(spi_pc_transmit_t));
+        memset(&spi_transaction_pc_receiver, 0, sizeof(spi_transaction_pc_receiver));
         spi_transaction_pc_receiver.length = sizeof(spi_pc_transmit_t) * 8;
         spi_transaction_pc_receiver.tx_buffer = NULL;
         spi_transaction_pc_receiver.rx_buffer = spi_pc_buffer;
@@ -89,13 +90,17 @@ void spi_task_slave_pc_receiver(void *pvParameters){
         
         // Validate the received buffer
         assert(ret == ESP_OK);
+        // Idle bus / usb-output not ready yet clocks all-zero; ignore silently.
+        if (spi_pc_buffer->header == 0 && spi_pc_buffer->crc == 0) {
+            continue;
+        }
         if (spi_pc_buffer->header != HEADER_PC_TRANSMISSION ||
             spi_pc_buffer->crc != esp_crc16_le(UINT16_MAX, (void*)&spi_pc_buffer->led, sizeof(char))){
+            #if DEBUG_LOG
             ESP_LOGI(pcTaskGetName(NULL), "SPI received transmission invalid with => %x; %x;", spi_pc_buffer->header, spi_pc_buffer->crc);
-            
-            // Where are not expecting an invalid SPI transmission.
-            // But this happens when the other device is turned off.
-            // Disabling SPI for 500ms agains incorrect transaction.
+            #endif
+
+            // Corrupted frame: back off briefly so a stuck master does not spin hot.
             spi_slave_disable(SPI_PC_RECEIVER);
             vTaskDelay(pdMS_TO_TICKS(500));
             spi_slave_enable(SPI_PC_RECEIVER);
