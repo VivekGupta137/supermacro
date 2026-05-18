@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include "macro_profile.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,11 @@
 
 static char s_profile_name[MACRO_PROFILE_NAME_CAP] = "built-in";
 static bool s_macros_enabled = true;
+static bool s_additive_mouse = false;
+static float s_edpi = 0.f;
+static float s_pattern_edpi = 800.f;
+static float s_edpi_scale = 1.f;
+static float s_seq_scale[MAX_KEY_MODIFICATION_SEQUENCE];
 #if CONFIG_MACRO_WEB_UI
 #define MAX_MACRO_SCRIPTS 4
 #define MAX_SCRIPT_NAME_LEN MACRO_PROFILE_NAME_CAP
@@ -40,6 +46,46 @@ static uint32_t s_status_seq;
 const char *macro_profile_get_name(void) { return s_profile_name; }
 
 bool macro_profile_macros_enabled(void) { return s_macros_enabled; }
+
+bool macro_profile_additive_mouse_enabled(void)
+{
+    return s_additive_mouse;
+}
+
+float macro_profile_get_edpi(void) { return s_edpi; }
+
+float macro_profile_get_pattern_edpi(void) { return s_pattern_edpi; }
+
+float macro_profile_get_edpi_scale(void) { return s_edpi_scale; }
+
+float macro_profile_sequence_mouse_scale(int group_index)
+{
+    if (group_index < 0 || group_index >= MAX_KEY_MODIFICATION_SEQUENCE) {
+        return 1.f;
+    }
+    return s_seq_scale[group_index];
+}
+
+void macro_profile_sync_active_group_scales(const group_sequence_t *gs)
+{
+    if (!gs) {
+        for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++) {
+            s_seq_scale[i] = 1.f;
+        }
+        return;
+    }
+    int i = 0;
+    for (; i < MAX_KEY_MODIFICATION_SEQUENCE; i++) {
+        if (gs->list[i].size == 0) {
+            break;
+        }
+        const float ms = gs->list[i].mouse_scale;
+        s_seq_scale[i] = (ms > 0.f) ? ms : 1.f;
+    }
+    for (; i < MAX_KEY_MODIFICATION_SEQUENCE; i++) {
+        s_seq_scale[i] = 1.f;
+    }
+}
 
 uint8_t macro_profile_script_count(void)
 {
@@ -123,9 +169,25 @@ void macro_profile_build_status_json(char *buf, size_t buflen)
     cJSON_AddStringToObject(root, "profile", macro_profile_get_name());
     cJSON_AddBoolToObject(root, "macrosOn", s_macros_enabled);
     cJSON_AddNumberToObject(root, "activeScript", ai);
+    cJSON_AddNumberToObject(root, "activeWeapon", ai);
     cJSON_AddNumberToObject(root, "scriptCount", sn);
     cJSON_AddStringToObject(root, "activeScriptName", macro_profile_script_name((uint8_t)ai));
+    cJSON_AddStringToObject(root, "activeWeaponName", macro_profile_script_name((uint8_t)ai));
     cJSON_AddNumberToObject(root, "activeGroupCount", ag);
+    cJSON_AddNumberToObject(root, "activeModeCount", ag);
+    cJSON_AddNumberToObject(root, "eDPI", (double)s_edpi);
+    cJSON_AddNumberToObject(root, "patternEDPI", (double)s_pattern_edpi);
+    cJSON_AddNumberToObject(root, "edpiScale", (double)s_edpi_scale);
+    if (ag > 0 && gs_for_count->list[0].size > 0) {
+        cJSON_AddNumberToObject(root, "activeMouseScale", (double)gs_for_count->list[0].mouse_scale);
+    }
+    cJSON *mode_scales = cJSON_CreateArray();
+    if (mode_scales) {
+        for (int i = 0; i < ag; i++) {
+            cJSON_AddItemToArray(mode_scales, cJSON_CreateNumber((double)gs_for_count->list[i].mouse_scale));
+        }
+        cJSON_AddItemToObject(root, "activeModeScales", mode_scales);
+    }
     cJSON *names = cJSON_CreateArray();
     if (names) {
         for (int i = 0; i < sn; i++) {
@@ -216,6 +278,11 @@ static void profile_runtime_reset_parsed(void)
     memset(s_script_banks, 0, sizeof(s_script_banks));
     s_script_count = 0;
     s_active_script = 0;
+    s_additive_mouse = false;
+    s_edpi = 0.f;
+    s_pattern_edpi = 800.f;
+    s_edpi_scale = 1.f;
+    macro_profile_sync_active_group_scales(NULL);
     s_has_toggle_macros_trig = false;
     s_has_next_script_trig = false;
     memset(&s_toggle_macros_trig, 0, sizeof(s_toggle_macros_trig));
@@ -324,6 +391,18 @@ static bool fill_keyboard_event(hid_transmit_t *t, const cJSON *kbd)
     return true;
 }
 
+static void scale_hid_mouse_transmit(hid_transmit_t *ev, float scale)
+{
+    if (scale == 1.f || ev->header != HEADER_HID_MOUSE) {
+        return;
+    }
+    hid_mouse_report_t *m = &ev->event.mouse;
+    m->x = (int8_t)clamp_i32_to_i8((int)lroundf((float)m->x * scale));
+    m->y = (int8_t)clamp_i32_to_i8((int)lroundf((float)m->y * scale));
+    m->wheel = (int8_t)clamp_i32_to_i8((int)lroundf((float)m->wheel * scale));
+    m->pan = (int8_t)clamp_i32_to_i8((int)lroundf((float)m->pan * scale));
+}
+
 static bool fill_mouse_event(hid_transmit_t *t, const cJSON *mouse)
 {
     t->header = HEADER_HID_MOUSE;
@@ -354,9 +433,18 @@ static bool fill_mouse_event(hid_transmit_t *t, const cJSON *mouse)
     return true;
 }
 
+static bool step_has_removed_fields(const cJSON *step)
+{
+    return cJSON_GetObjectItem(step, "mouseTo") != NULL || cJSON_GetObjectItem(step, "interp") != NULL ||
+           cJSON_GetObjectItem(step, "segments") != NULL || cJSON_GetObjectItem(step, "humanize") != NULL;
+}
+
 static bool fill_step(const cJSON *step, key_modification_event_t *ev)
 {
     if (!step || !cJSON_IsObject(step)) {
+        return false;
+    }
+    if (step_has_removed_fields(step)) {
         return false;
     }
     const cJSON *us = cJSON_GetObjectItem(step, "us");
@@ -398,13 +486,87 @@ static bool fill_trigger(hid_transmit_t *t, const cJSON *obj)
     return true;
 }
 
-static bool parse_one_group(const cJSON *g, key_modification_sequence_t *seq)
+static float json_positive_scale(const cJSON *s)
+{
+    if (s && cJSON_IsNumber(s) && s->valuedouble > 0.0) {
+        return (float)s->valuedouble;
+    }
+    return 0.f;
+}
+
+static float json_scale_or_one(const cJSON *obj)
+{
+    if (!obj) {
+        return 1.f;
+    }
+    const float s = json_positive_scale(cJSON_GetObjectItem(obj, "scale"));
+    return (s > 0.f) ? s : 1.f;
+}
+
+/** v3 mode / v1–v2 group: `modeScale` (preferred) or `scale`. */
+static float json_mode_scale_or_one(const cJSON *mode)
+{
+    if (!mode) {
+        return 1.f;
+    }
+    float s = json_positive_scale(cJSON_GetObjectItem(mode, "modeScale"));
+    if (s <= 0.f) {
+        s = json_positive_scale(cJSON_GetObjectItem(mode, "scale"));
+    }
+    return (s > 0.f) ? s : 1.f;
+}
+
+static void parse_profile_edpi(const cJSON *root)
+{
+    float user = 0.f;
+    float pattern = 800.f;
+    const cJSON *e = cJSON_GetObjectItem(root, "eDPI");
+    const cJSON *p = cJSON_GetObjectItem(root, "patternEDPI");
+    if (e && cJSON_IsNumber(e) && e->valuedouble > 0.0) {
+        user = (float)e->valuedouble;
+    }
+    if (p && cJSON_IsNumber(p) && p->valuedouble > 0.0) {
+        pattern = (float)p->valuedouble;
+    }
+    s_edpi = user;
+    s_pattern_edpi = pattern;
+    if (user > 0.f && pattern > 0.f) {
+        s_edpi_scale = user / pattern;
+    } else {
+        s_edpi_scale = 1.f;
+    }
+}
+
+static bool parse_press_exact_flag(const cJSON *g)
+{
+    const cJSON *pm = cJSON_GetObjectItem(g, "pressMode");
+    if (pm && cJSON_IsString(pm) && pm->valuestring) {
+        return strcmp(pm->valuestring, "exact") == 0;
+    }
+    return false;
+}
+
+static uint8_t parse_mode_set_field(const cJSON *g, uint8_t bank_default)
+{
+    const cJSON *ms = cJSON_GetObjectItem(g, "modeSet");
+    if (ms && cJSON_IsNumber(ms) && ms->valuedouble > 0.0) {
+        int v = (int)ms->valuedouble;
+        if (v > 255) {
+            v = 255;
+        }
+        return (uint8_t)v;
+    }
+    return bank_default;
+}
+
+static bool parse_one_group(const cJSON *g, key_modification_sequence_t *seq, float bank_scale, uint8_t default_mode_set)
 {
     const cJSON *steps = cJSON_GetObjectItem(g, "steps");
     int nsteps = 0;
     if (steps && cJSON_IsArray(steps)) {
         nsteps = cJSON_GetArraySize(steps);
     }
+    const float step_scale = s_edpi_scale * bank_scale * json_mode_scale_or_one(g);
     if (nsteps == 0) {
         seq->list[0].duration = 0;
         seq->list[0].event.header = HEADER_HID_KEYBOARD;
@@ -427,9 +589,11 @@ static bool parse_one_group(const cJSON *g, key_modification_sequence_t *seq)
             if (!fill_step(cJSON_GetArrayItem(steps, i), &seq->list[i])) {
                 return false;
             }
+            scale_hid_mouse_transmit(&seq->list[i].event, step_scale);
         }
         seq->size = (uint8_t)nsteps;
     }
+    seq->mouse_scale = step_scale;
     const cJSON *loop = cJSON_GetObjectItem(g, "loop");
     seq->loop = cJSON_IsTrue(loop);
     if (!fill_trigger(&seq->event_press, cJSON_GetObjectItem(g, "press"))) {
@@ -441,10 +605,12 @@ static bool parse_one_group(const cJSON *g, key_modification_sequence_t *seq)
     if (!fill_trigger(&seq->save_press, cJSON_GetObjectItem(g, "save"))) {
         return false;
     }
+    seq->press_exact = parse_press_exact_flag(g);
+    seq->mode_set = parse_mode_set_field(g, default_mode_set);
     return true;
 }
 
-static bool fill_groups_from_json(const cJSON *groups, group_sequence_t *out_seq)
+static bool fill_groups_from_json(const cJSON *groups, group_sequence_t *out_seq, float bank_scale, uint8_t mode_set_id)
 {
     if (!groups || !cJSON_IsArray(groups)) {
         return false;
@@ -454,11 +620,29 @@ static bool fill_groups_from_json(const cJSON *groups, group_sequence_t *out_seq
         return false;
     }
     for (int i = 0; i < ng; i++) {
-        if (!parse_one_group(cJSON_GetArrayItem(groups, i), &out_seq->list[i])) {
+        if (!parse_one_group(cJSON_GetArrayItem(groups, i), &out_seq->list[i], bank_scale, mode_set_id)) {
             return false;
         }
     }
     return true;
+}
+
+static const cJSON *profile_weapon_banks_array(const cJSON *root)
+{
+    const cJSON *weapons = cJSON_GetObjectItem(root, "weapons");
+    if (weapons && cJSON_IsArray(weapons)) {
+        return weapons;
+    }
+    return cJSON_GetObjectItem(root, "scripts");
+}
+
+static const cJSON *weapon_modes_array(const cJSON *weapon)
+{
+    const cJSON *modes = cJSON_GetObjectItem(weapon, "modes");
+    if (modes && cJSON_IsArray(modes)) {
+        return modes;
+    }
+    return cJSON_GetObjectItem(weapon, "groups");
 }
 
 static bool assign_hotkey_trigger(hid_transmit_t *dst, bool *has_out, const cJSON *root, const char *key)
@@ -492,13 +676,17 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
         return false;
     }
     int vn = (int)ver->valuedouble;
-    if (vn != 1 && vn != 2) {
+    if (vn != 1 && vn != 2 && vn != 3) {
         cJSON_Delete(root);
         return false;
     }
 
     profile_runtime_reset_parsed();
     s_schema_version = vn;
+    parse_profile_edpi(root);
+
+    const cJSON *additive = cJSON_GetObjectItem(root, "additiveMouse");
+    s_additive_mouse = !cJSON_IsFalse(additive);
 
     const cJSON *name = cJSON_GetObjectItem(root, "name");
     if (name && cJSON_IsString(name) && name->valuestring) {
@@ -511,7 +699,7 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
 
     if (vn == 1) {
         const cJSON *groups = cJSON_GetObjectItem(root, "groups");
-        if (!fill_groups_from_json(groups, out)) {
+        if (!fill_groups_from_json(groups, out, 1.f, 1)) {
             cJSON_Delete(root);
             memset(out, 0, sizeof(*out));
             profile_runtime_reset_parsed();
@@ -525,13 +713,14 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
         s_macros_enabled = true;
         s_has_toggle_macros_trig = false;
         s_has_next_script_trig = false;
+        macro_profile_sync_active_group_scales(out);
         cJSON_Delete(root);
         return true;
     }
 
-    const cJSON *scripts = cJSON_GetObjectItem(root, "scripts");
-    if (scripts && cJSON_IsArray(scripts)) {
-        int ns = cJSON_GetArraySize(scripts);
+    const cJSON *banks = profile_weapon_banks_array(root);
+    if (banks && cJSON_IsArray(banks)) {
+        int ns = cJSON_GetArraySize(banks);
         if (ns <= 0 || ns > MAX_MACRO_SCRIPTS) {
             cJSON_Delete(root);
             memset(out, 0, sizeof(*out));
@@ -539,9 +728,11 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
             return false;
         }
         for (int si = 0; si < ns; si++) {
-            const cJSON *sp = cJSON_GetArrayItem(scripts, si);
-            const cJSON *grp = cJSON_GetObjectItem(sp, "groups");
-            if (!fill_groups_from_json(grp, &s_script_banks[si])) {
+            const cJSON *sp = cJSON_GetArrayItem(banks, si);
+            const float script_scale = json_scale_or_one(sp);
+            const cJSON *grp = weapon_modes_array(sp);
+            const uint8_t mode_set_id = (uint8_t)(si + 1);
+            if (!fill_groups_from_json(grp, &s_script_banks[si], script_scale, mode_set_id)) {
                 cJSON_Delete(root);
                 memset(out, 0, sizeof(*out));
                 profile_runtime_reset_parsed();
@@ -552,13 +743,14 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
                 strncpy(s_script_names[si], sn->valuestring, sizeof(s_script_names[si]) - 1);
                 s_script_names[si][sizeof(s_script_names[si]) - 1] = '\0';
             } else {
-                snprintf(s_script_names[si], sizeof(s_script_names[si]), "script%d", si);
+                snprintf(s_script_names[si], sizeof(s_script_names[si]),
+                         (vn == 3) ? "weapon%d" : "script%d", si);
             }
         }
         s_script_count = (uint8_t)ns;
     } else {
         const cJSON *groups = cJSON_GetObjectItem(root, "groups");
-        if (!fill_groups_from_json(groups, &s_script_banks[0])) {
+        if (!fill_groups_from_json(groups, &s_script_banks[0], 1.f, 1)) {
             cJSON_Delete(root);
             memset(out, 0, sizeof(*out));
             profile_runtime_reset_parsed();
@@ -569,7 +761,10 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
         s_script_names[0][sizeof(s_script_names[0]) - 1] = '\0';
     }
 
-    const cJSON *active = cJSON_GetObjectItem(root, "activeScript");
+    const cJSON *active = cJSON_GetObjectItem(root, "activeWeapon");
+    if (!active || !cJSON_IsNumber(active)) {
+        active = cJSON_GetObjectItem(root, "activeScript");
+    }
     if (active && cJSON_IsNumber(active)) {
         int a = (int)active->valuedouble;
         if (a < 0) {
@@ -598,8 +793,17 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
         profile_runtime_reset_parsed();
         return false;
     }
+    if (vn == 3 && !s_has_next_script_trig) {
+        if (!assign_hotkey_trigger(&s_next_script_trig, &s_has_next_script_trig, root, "nextWeapon")) {
+            cJSON_Delete(root);
+            memset(out, 0, sizeof(*out));
+            profile_runtime_reset_parsed();
+            return false;
+        }
+    }
 
     memcpy(out, &s_script_banks[s_active_script], sizeof(*out));
+    macro_profile_sync_active_group_scales(out);
     cJSON_Delete(root);
     return true;
 }
@@ -647,7 +851,12 @@ void macro_profile_init(const group_sequence_t *fallback)
 #if CONFIG_MACRO_WEB_UI
     esp_err_t mnt = spiffs_mount_once();
     if (mnt == ESP_OK && load_profile_from_flash()) {
-        ESP_LOGI(LOG_TITLE, "Macro profile loaded from SPIFFS (%s)", s_profile_name);
+        macro_profile_sync_active_group_scales(&group_sequence);
+        ESP_LOGI(LOG_TITLE,
+                 "Macro profile loaded from SPIFFS (%s) macrosOn=%d eDPI=%.0f patternEDPI=%.0f "
+                 "edpiScale=%.3f g0_scale=%.3f g0_steps=%u",
+                 s_profile_name, (int)s_macros_enabled, (double)s_edpi, (double)s_pattern_edpi,
+                 (double)s_edpi_scale, (double)s_seq_scale[0], (unsigned)group_sequence.list[0].size);
         return;
     }
     if (mnt != ESP_OK) {
@@ -656,6 +865,7 @@ void macro_profile_init(const group_sequence_t *fallback)
     }
 #endif
     group_sequence = *fallback;
+    macro_profile_sync_active_group_scales(&group_sequence);
 #if CONFIG_MACRO_WEB_UI
     memcpy(&s_script_banks[0], &group_sequence, sizeof(group_sequence_t));
     s_script_count = 1;
@@ -664,6 +874,7 @@ void macro_profile_init(const group_sequence_t *fallback)
     s_has_toggle_macros_trig = false;
     s_has_next_script_trig = false;
     s_macros_enabled = true;
+    s_additive_mouse = false;
     s_schema_version = 1;
 #endif
 }

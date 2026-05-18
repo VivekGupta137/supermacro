@@ -1,5 +1,6 @@
 // Import global project config
 #include "config.h"
+#include "perf_log.h"
 
 // Queue to store HID reports
 QueueHandle_t global_hid_report_queue = NULL;
@@ -49,8 +50,18 @@ void hid_task_multiplexer(void *pvParameters) {
       static bool status;
       if (queue_received.header == HEADER_HID_KEYBOARD) {
         status = tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, queue_received.event.keyboard.modifier, queue_received.event.keyboard.keycode);
+#if USB_OUTPUT_PERF_LOG_ENABLE
+        if (status) {
+            perf_stat_bump(PERF_USB_OUT_KBD);
+        }
+#endif
       } else if (queue_received.header == HEADER_HID_MOUSE) {
         status = tud_hid_mouse_report(HID_ITF_PROTOCOL_MOUSE, queue_received.event.mouse.buttons, queue_received.event.mouse.x, queue_received.event.mouse.y, queue_received.event.mouse.wheel, queue_received.event.mouse.pan);
+#if USB_OUTPUT_PERF_LOG_ENABLE
+        if (status) {
+            perf_stat_bump(PERF_USB_OUT_MOUSE);
+        }
+#endif
       }
       if (status == false && tud_ready()) {
             ESP_LOGI(pcTaskGetName(NULL), "Sending report to TinyUSB failed => tud status: %d", tud_ready());

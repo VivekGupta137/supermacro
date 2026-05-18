@@ -7,6 +7,7 @@ set(srcs
     "macro_defaults.c"
     "macro_profile.c"
     "macro_web.c"
+    "perf_log.c"
     )
 
 if(CONFIG_MACRO_WEB_UI)
@@ -45,6 +46,7 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
         COMMAND "${Python3_EXECUTABLE}" "${doc_gen_script}" "${doc_src_dir}" "${doc_header}"
         DEPENDS
             "${doc_gen_script}"
+            "${CMAKE_CURRENT_LIST_DIR}/web/index.html"
             "${doc_src_dir}/QUICK_WALKTHROUGH.md"
             "${doc_src_dir}/PROFILE_SCHEMA.md"
             "${doc_src_dir}/MACRO_STRUCTURE_DETAILED_GUIDE.md"

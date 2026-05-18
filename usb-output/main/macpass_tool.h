@@ -1,5 +1,7 @@
 #pragma once
 
+#include <math.h>
+
 #define BYTE_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c"
 
 #define BYTE_TO_BINARY(byte)  \
@@ -135,6 +137,25 @@ static inline bool mouse_report_contains_event(const hid_mouse_report_t report, 
     return true;
 }
 
+/** Chord held: `exact` => buttons equal mask; else all mask bits down (extras allowed). */
+static inline bool mouse_chord_held(const hid_mouse_report_t report, const hid_mouse_report_t expected, bool exact)
+{
+    if (expected.buttons == 0) {
+        return false;
+    }
+    if (exact) {
+        return report.buttons == expected.buttons;
+    }
+    return mouse_report_contains_event(report, expected);
+}
+
+/** Rising edge for press trigger. */
+static inline bool mouse_chord_rising(const hid_mouse_report_t cur, const hid_mouse_report_t prev,
+                                      const hid_mouse_report_t expected, bool exact)
+{
+    return mouse_chord_held(cur, expected, exact) && !mouse_chord_held(prev, expected, exact);
+}
+
 /**
  * Adds the contents of src into dst for HID reports.
  * - For keyboard: adds modifiers and merges keycodes (avoids duplicates).
@@ -161,6 +182,66 @@ static inline void set_mouse_movement_to_report(hid_mouse_report_t* dst, const h
     dst->x = src.x;
     dst->y = src.y;
     dst->wheel = src.wheel;
+    dst->pan = src.pan;
+}
+
+static inline int8_t clamp_i32_to_i8_mouse(int v)
+{
+    if (v > 127) {
+        return 127;
+    }
+    if (v < -128) {
+        return (int8_t)-128;
+    }
+    return (int8_t)v;
+}
+
+/** Scale script x/y/w/p by `scale` (1.0 = unchanged). Buttons unchanged. */
+static inline hid_mouse_report_t scale_mouse_movement(const hid_mouse_report_t src, float scale)
+{
+    if (scale <= 0.f || scale == 1.f) {
+        return src;
+    }
+    hid_mouse_report_t out = src;
+    out.x = clamp_i32_to_i8_mouse((int)lroundf((float)src.x * scale));
+    out.y = clamp_i32_to_i8_mouse((int)lroundf((float)src.y * scale));
+    out.wheel = clamp_i32_to_i8_mouse((int)lroundf((float)src.wheel * scale));
+    out.pan = clamp_i32_to_i8_mouse((int)lroundf((float)src.pan * scale));
+    return out;
+}
+
+/** Add macro deltas to an existing mouse report (user + script), clamping each axis to int8. */
+static inline void add_mouse_movement_delta(hid_mouse_report_t *dst, const hid_mouse_report_t src)
+{
+    int x = (int)dst->x + (int)src.x;
+    int y = (int)dst->y + (int)src.y;
+    int w = (int)dst->wheel + (int)src.wheel;
+    int p = (int)dst->pan + (int)src.pan;
+    if (x > 127) {
+        x = 127;
+    } else if (x < -128) {
+        x = -128;
+    }
+    if (y > 127) {
+        y = 127;
+    } else if (y < -128) {
+        y = -128;
+    }
+    if (w > 127) {
+        w = 127;
+    } else if (w < -128) {
+        w = -128;
+    }
+    if (p > 127) {
+        p = 127;
+    } else if (p < -128) {
+        p = -128;
+    }
+    dst->x = (int8_t)x;
+    dst->y = (int8_t)y;
+    dst->wheel = (int8_t)w;
+    dst->pan = (int8_t)p;
+    dst->buttons |= src.buttons;
 }
 
 static inline void reset_sequence(key_modification_sequence_t* sequence){
@@ -187,8 +268,6 @@ static inline void start_sequence(key_modification_sequence_t* sequence){
     if (target > now) {
         esp_timer_start_once(sequence->timer, target - now);
     } else {
-        // wait 1ms to not overload.
-        ESP_LOGI(pcTaskGetName(NULL), "Macro: behind schedule => wait 1ms more", tud_ready());
         esp_timer_start_once(sequence->timer, 1000);
     }
 }

@@ -32,11 +32,34 @@ menu "Macro profile / web UI"
             string "Router SSID (Station mode only)"
             depends on MACRO_WIFI_ROLE_STA
             default "mywifi"
+            help
+                Must be the 2.4 GHz network name (ESP32 does not support 5 GHz-only SSIDs).
 
         config MACRO_WIFI_STA_PASSWORD
             string "Router password (Station mode only, empty = open network)"
             depends on MACRO_WIFI_ROLE_STA
             default ""
+            help
+                WPA2 or WPA2/WPA3 mixed PSK. Rebuild after changing. On auth failures the
+                serial log prints the disconnect reason (e.g. wrong password, SSID not found).
+
+        choice MACRO_WIFI_STA_SECURITY
+            prompt "Station Wi-Fi security mode"
+            depends on MACRO_WIFI_ROLE_STA
+            default MACRO_WIFI_STA_SECURITY_AUTO
+            help
+                Auto: let the ESP negotiate with the router (recommended).
+                Use WPA2 or WPA3 only if Auto fails and you know the router mode.
+
+            config MACRO_WIFI_STA_SECURITY_AUTO
+                bool "Auto (negotiate WPA2/WPA3)"
+
+            config MACRO_WIFI_STA_SECURITY_WPA2
+                bool "Force WPA2-PSK"
+
+            config MACRO_WIFI_STA_SECURITY_WPA3
+                bool "Force WPA3-SAE"
+        endchoice
 
         config MACRO_WIFI_STA_HOSTNAME
             string "DHCP hostname on LAN (optional, Station only)"

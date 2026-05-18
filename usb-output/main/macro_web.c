@@ -13,6 +13,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
 #include "macro_profile.h"
@@ -29,19 +30,145 @@
 static const char *TAG = "macro_web";
 
 static SemaphoreHandle_t s_net_ready;
+static bool s_http_started;
+
+static void http_server_start(void);
+
+/** Free sockets quickly on ESP32 (default keep-alive holds slots until max_open_sockets). */
+static void http_set_conn_close(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "Connection", "close");
+}
 
 #if CONFIG_MACRO_WIFI_ROLE_STA
+
+static uint32_t s_reconnect_delay_ms = 2000;
+static esp_timer_handle_t s_wifi_reconnect_timer;
+static esp_timer_handle_t s_wifi_connect_timer;
+
+static const char *wifi_disc_reason_str(uint8_t reason)
+{
+    switch (reason) {
+    case WIFI_REASON_UNSPECIFIED:
+        return "unspecified";
+    case WIFI_REASON_AUTH_EXPIRE:
+        return "auth expired (wrong password or WPA mismatch)";
+    case WIFI_REASON_AUTH_LEAVE:
+        return "auth leave";
+    case WIFI_REASON_ASSOC_EXPIRE:
+        return "assoc expired";
+    case WIFI_REASON_ASSOC_TOOMANY:
+        return "AP full";
+    case WIFI_REASON_NOT_AUTHED:
+        return "not authenticated";
+    case WIFI_REASON_NOT_ASSOCED:
+        return "not associated";
+    case WIFI_REASON_ASSOC_LEAVE:
+        return "assoc leave";
+    case WIFI_REASON_ASSOC_NOT_AUTHED:
+        return "assoc not authed";
+    case WIFI_REASON_DISASSOC_PWRCAP_BAD:
+        return "bad power cap";
+    case WIFI_REASON_DISASSOC_SUPCHAN_BAD:
+        return "bad channel";
+    case WIFI_REASON_IE_INVALID:
+        return "invalid IE";
+    case WIFI_REASON_MIC_FAILURE:
+        return "MIC failure";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        return "4-way handshake timeout (wrong password?)";
+    case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT:
+        return "group key timeout";
+    case WIFI_REASON_IE_IN_4WAY_DIFFERS:
+        return "IE differs in 4-way";
+    case WIFI_REASON_GROUP_CIPHER_INVALID:
+        return "invalid group cipher";
+    case WIFI_REASON_PAIRWISE_CIPHER_INVALID:
+        return "invalid pairwise cipher";
+    case WIFI_REASON_AKMP_INVALID:
+        return "invalid AKMP";
+    case WIFI_REASON_UNSUPP_RSN_IE_VERSION:
+        return "unsupported RSN IE";
+    case WIFI_REASON_INVALID_RSN_IE_CAP:
+        return "invalid RSN IE cap";
+    case WIFI_REASON_802_1X_AUTH_FAILED:
+        return "802.1X auth failed";
+    case WIFI_REASON_CIPHER_SUITE_REJECTED:
+        return "cipher rejected";
+    case WIFI_REASON_BEACON_TIMEOUT:
+        return "beacon timeout (out of range?)";
+    case WIFI_REASON_NO_AP_FOUND:
+        return "SSID not found (2.4 GHz? typo?)";
+    case WIFI_REASON_AUTH_FAIL:
+        return "auth failed (wrong password / WPA mode?)";
+    case WIFI_REASON_ASSOC_FAIL:
+        return "assoc failed";
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+        return "handshake timeout";
+#if defined(WIFI_REASON_CONNECTION_FAIL)
+    case WIFI_REASON_CONNECTION_FAIL:
+        return "connection fail (check password / WPA2 vs WPA3)";
+#else
+    case 205:
+        return "connection fail (check password / WPA2 vs WPA3)";
+#endif
+    default:
+        return "see esp_wifi_types.h";
+    }
+}
+
+static void wifi_connect_timer_cb(void *arg)
+{
+    (void)arg;
+    esp_wifi_connect();
+}
+
+static void wifi_reconnect_timer_cb(void *arg)
+{
+    (void)arg;
+    esp_wifi_connect();
+}
+
+static void schedule_wifi_connect(uint32_t delay_ms)
+{
+    if (s_wifi_connect_timer == NULL) {
+        esp_wifi_connect();
+        return;
+    }
+    esp_timer_stop(s_wifi_connect_timer);
+    esp_timer_start_once(s_wifi_connect_timer, (uint64_t)delay_ms * 1000ULL);
+}
+
+static void schedule_wifi_reconnect(void)
+{
+    if (s_wifi_reconnect_timer == NULL) {
+        return;
+    }
+    esp_timer_stop(s_wifi_reconnect_timer);
+    esp_timer_start_once(s_wifi_reconnect_timer, (uint64_t)s_reconnect_delay_ms * 1000ULL);
+    ESP_LOGI(TAG, "Wi-Fi reconnect in %lu ms", (unsigned long)s_reconnect_delay_ms);
+    uint32_t next = s_reconnect_delay_ms * 2;
+    s_reconnect_delay_ms = next > 30000 ? 30000 : next;
+}
 
 static void sta_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
     (void)base;
-    (void)data;
     if (id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        s_reconnect_delay_ms = 2000;
+        /* Brief delay so the AP/beacon is up before the first scan (avoids NO_AP_FOUND at boot). */
+        schedule_wifi_connect(1000);
     } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGW(TAG, "Wi-Fi disconnected, reconnecting…");
-        esp_wifi_connect();
+        wifi_event_sta_disconnected_t *disc = (wifi_event_sta_disconnected_t *)data;
+        uint8_t reason = disc ? disc->reason : 0;
+        ESP_LOGW(TAG, "STA disconnected: %u (%s)", reason, wifi_disc_reason_str(reason));
+        if (reason == WIFI_REASON_NO_AP_FOUND) {
+            s_reconnect_delay_ms = 5000;
+            ESP_LOGW(TAG, "Check menuconfig SSID \"%s\" (exact 2.4 GHz name, no extra spaces)",
+                     CONFIG_MACRO_WIFI_STA_SSID);
+        }
+        schedule_wifi_reconnect();
     }
 }
 
@@ -51,7 +178,14 @@ static void sta_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     (void)base;
     (void)id;
     ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
+    s_reconnect_delay_ms = 2000;
     ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&ev->ip_info.ip));
+    if (!s_http_started) {
+        http_server_start();
+        if (s_http_started) {
+            ESP_LOGI(TAG, "Web UI: http://" IPSTR "/ (same LAN as router)", IP2STR(&ev->ip_info.ip));
+        }
+    }
     if (s_net_ready) {
         xSemaphoreGive(s_net_ready);
     }
@@ -69,6 +203,20 @@ static bool wifi_start_sta(esp_netif_t **out_netif)
         esp_netif_set_hostname(*out_netif, CONFIG_MACRO_WIFI_STA_HOSTNAME);
     }
 
+    const esp_timer_create_args_t reconn_args = {
+        .callback = &wifi_reconnect_timer_cb,
+        .name = "wifi_reconn",
+    };
+    const esp_timer_create_args_t conn_args = {
+        .callback = &wifi_connect_timer_cb,
+        .name = "wifi_conn",
+    };
+    if (esp_timer_create(&reconn_args, &s_wifi_reconnect_timer) != ESP_OK ||
+        esp_timer_create(&conn_args, &s_wifi_connect_timer) != ESP_OK) {
+        ESP_LOGE(TAG, "Wi-Fi timer create failed");
+        return false;
+    }
+
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &sta_wifi_event, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &sta_got_ip, NULL));
 
@@ -76,29 +224,60 @@ static bool wifi_start_sta(esp_netif_t **out_netif)
     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
+    wifi_country_t country = {
+        .cc = "01",
+        .schan = 1,
+        .nchan = 13,
+        .policy = WIFI_COUNTRY_POLICY_AUTO,
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_country(&country));
+
     wifi_config_t wifi = {0};
     strncpy((char *)wifi.sta.ssid, CONFIG_MACRO_WIFI_STA_SSID, sizeof(wifi.sta.ssid) - 1);
     const char *pw = CONFIG_MACRO_WIFI_STA_PASSWORD;
     size_t pwlen = strlen(pw);
     if (pwlen > 0) {
         strncpy((char *)wifi.sta.password, pw, sizeof(wifi.sta.password) - 1);
+#if CONFIG_MACRO_WIFI_STA_SECURITY_WPA2
+        wifi.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        wifi.sta.pmf_cfg.capable = true;
+        wifi.sta.pmf_cfg.required = false;
+#elif CONFIG_MACRO_WIFI_STA_SECURITY_WPA3
+        wifi.sta.threshold.authmode = WIFI_AUTH_WPA3_PSK;
+        wifi.sta.pmf_cfg.capable = true;
+        wifi.sta.pmf_cfg.required = true;
+        wifi.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+#else
+        /* Auto: no threshold — driver negotiates WPA2/WPA3 with the AP (worked on most home routers). */
+#endif
     } else {
         wifi.sta.threshold.authmode = WIFI_AUTH_OPEN;
     }
 
+    wifi.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wifi.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    wifi.sta.failure_retry_cnt = 5;
+
+    ESP_LOGI(TAG, "Connecting to SSID \"%s\" (len=%u, %s, 2.4 GHz)",
+             CONFIG_MACRO_WIFI_STA_SSID,
+             (unsigned)strlen(CONFIG_MACRO_WIFI_STA_SSID),
+#if CONFIG_MACRO_WIFI_STA_SECURITY_WPA2
+             "WPA2 required"
+#elif CONFIG_MACRO_WIFI_STA_SECURITY_WPA3
+             "WPA3 required"
+#else
+             "security auto"
+#endif
+    );
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi));
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
-    if (xSemaphoreTake(s_net_ready, pdMS_TO_TICKS(60000)) != pdTRUE) {
-        ESP_LOGE(TAG, "Station did not get an IP in 60s (check SSID/password / router)");
+    if (xSemaphoreTake(s_net_ready, pdMS_TO_TICKS(90000)) != pdTRUE) {
+        ESP_LOGE(TAG, "No IP in 90s — verify menuconfig SSID/password; router 2.4 GHz WPA2");
         return false;
     }
 
-    esp_netif_ip_info_t ip;
-    if (esp_netif_get_ip_info(*out_netif, &ip) == ESP_OK) {
-        ESP_LOGI(TAG, "Web UI: http://" IPSTR "/ (same LAN as router)", IP2STR(&ip.ip));
-    }
     return true;
 }
 
@@ -168,65 +347,17 @@ static bool wifi_start_ap(esp_netif_t **out_netif)
 
 #endif /* role */
 
-static const char INDEX_HTML[] =
-    "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Macro</title></head><body>"
-    "<p><a href=\"/\">Home</a> | <a href=\"/docs\">Docs</a> | <a href=\"/documentation\">Quick Walkthrough</a></p>"
-    "<h1>MacroPassthrough</h1>"
-    "<p><strong>Active script:</strong> <span id=\"sn\">—</span> &nbsp; <strong>Macros:</strong> <span id=\"me\">—</span></p>"
-    "<p><button type=\"button\" id=\"btn-next\">Next gun script</button> "
-    "<button type=\"button\" id=\"btn-toggle\">Toggle macros</button></p>"
-    "<pre id=\"s\"></pre>"
-    "<p>POST JSON profile (<code>v</code>=1 or <code>v</code>=2). Valid profiles apply immediately and are saved to SPIFFS. "
-    "See <code>docs/PROFILE_SCHEMA.md</code> in the repo for the full schema.</p>"
-    "<p><a href=\"/documentation\">Open quick walkthrough</a> &nbsp; <a href=\"/docs\">Browse all available UI docs</a></p>"
-    "<form id=\"f\"><textarea id=\"t\" rows=\"20\" cols=\"90\"></textarea><br>"
-    "<button type=\"submit\">Upload profile</button> "
-    "<button type=\"button\" id=\"btn-fetch\">Fetch existing script</button></form>"
-    "<script>"
-    "function show(j){"
-    "document.getElementById('s').textContent=JSON.stringify(j,null,2);"
-    "var ix=Number(j.activeScript);if(!isFinite(ix))ix=0;ix=ix|0;"
-    "var nm=(j.activeScriptName!=null&&String(j.activeScriptName).length)?String(j.activeScriptName):"
-    "((j.scriptNames&&j.scriptNames[ix]!=null)?String(j.scriptNames[ix]):'(n/a)');"
-    "var gc=j.activeGroupCount;if(typeof gc!=='number'){gc=Number(j.activeGroupCount);}"
-    "var gtxt=(isFinite(gc)&&gc>=0)?' ('+gc+' macro groups)':'';"
-    "document.getElementById('sn').textContent='#'+ix+' '+nm+gtxt;"
-    "var mon=(j.macrosOn===true||j.macrosOn===false)?j.macrosOn:null;"
-    "document.getElementById('me').textContent=(mon===null)?'—':(mon?'on':'off');}"
-    "function poll(){fetch('/api/status',{cache:'no-store'}).then(function(r){if(!r.ok)throw r;return r.json();}).then(show).catch(function(){});}"
-    "setInterval(poll,2500);"
-    "document.addEventListener('visibilitychange',function(){if(!document.hidden)poll();});"
-    "function postAction(url){"
-    "fetch(url,{method:'POST'}).then(function(r){if(!r.ok)throw r;return r.json().catch(function(){return{};});})"
-    ".then(function(){poll();}).catch(function(){alert('Request failed');});}"
-    "function fetchExistingScript(){"
-    "fetch('/api/profile').then(function(r){if(!r.ok)throw r;return r.text();})"
-    ".then(function(txt){document.getElementById('t').value=txt;})"
-    ".catch(function(){alert('Fetch failed');});}"
-    "poll();"
-    "document.getElementById('btn-next').onclick=function(){postAction('/api/next-script');};"
-    "document.getElementById('btn-toggle').onclick=function(){postAction('/api/toggle-macros');};"
-    "document.getElementById('btn-fetch').onclick=fetchExistingScript;"
-    "var p=(location.protocol==='https:')?'wss://':'ws://';"
-    "try{var w=new WebSocket(p+location.host+'/ws');"
-    "w.onopen=function(){poll();};"
-    "w.onmessage=function(ev){try{var j=JSON.parse(ev.data);show(j);}catch(e){console.warn('ws json',e);}};"
-    "w.onclose=function(){setTimeout(poll,500);};}catch(e){}"
-    "document.getElementById('f').onsubmit=function(e){e.preventDefault();"
-    "fetch('/api/profile',{method:'POST',headers:{'Content-Type':'application/json'},"
-    "body:document.getElementById('t').value}).then(r=>{if(!r.ok)throw r;"
-    "alert('Profile applied and saved.');poll();}).catch(()=>alert('Upload failed'));};</script>"
-    "</body></html>";
-
 static esp_err_t h_root_get(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, INDEX_HTML, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    http_set_conn_close(req);
+    return httpd_resp_send(req, WEB_INDEX_HTML, (ssize_t)WEB_INDEX_HTML_LEN);
 }
 
 static esp_err_t h_favicon_get(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "204 No Content");
+    http_set_conn_close(req);
     return httpd_resp_send(req, "", 0);
 }
 
@@ -235,24 +366,28 @@ static esp_err_t h_status_get(httpd_req_t *req)
     char buf[2048];
     macro_profile_build_status_json(buf, sizeof(buf));
     httpd_resp_set_type(req, "application/json");
+    http_set_conn_close(req);
     return httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
 }
 
 static esp_err_t h_documentation_md_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/markdown; charset=utf-8");
+    http_set_conn_close(req);
     return httpd_resp_send(req, DOC_QUICK_WALKTHROUGH_MD, (ssize_t)DOC_QUICK_WALKTHROUGH_MD_LEN);
 }
 
 static esp_err_t h_profile_schema_md_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/markdown; charset=utf-8");
+    http_set_conn_close(req);
     return httpd_resp_send(req, DOC_PROFILE_SCHEMA_MD, (ssize_t)DOC_PROFILE_SCHEMA_MD_LEN);
 }
 
 static esp_err_t h_macro_structure_md_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/markdown; charset=utf-8");
+    http_set_conn_close(req);
     return httpd_resp_send(req, DOC_MACRO_STRUCTURE_DETAILED_GUIDE_MD,
                            (ssize_t)DOC_MACRO_STRUCTURE_DETAILED_GUIDE_MD_LEN);
 }
@@ -260,12 +395,14 @@ static esp_err_t h_macro_structure_md_get(httpd_req_t *req)
 static esp_err_t h_macro_plan_md_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/markdown; charset=utf-8");
+    http_set_conn_close(req);
     return httpd_resp_send(req, DOC_MACRO_WEB_UI_PLAN_MD, (ssize_t)DOC_MACRO_WEB_UI_PLAN_MD_LEN);
 }
 
 static esp_err_t h_docs_index_md_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/markdown; charset=utf-8");
+    http_set_conn_close(req);
     return httpd_resp_send(req, DOC_README_MD, (ssize_t)DOC_README_MD_LEN);
 }
 
@@ -299,6 +436,7 @@ static esp_err_t send_doc_page(httpd_req_t *req, const char *title, const char *
              "</script></body></html>",
              title, title, md_api_path);
     httpd_resp_set_type(req, "text/html; charset=utf-8");
+    http_set_conn_close(req);
     return httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
 }
 
@@ -347,6 +485,7 @@ static const char DOCS_INDEX_HTML[] =
 static esp_err_t h_docs_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
+    http_set_conn_close(req);
     return httpd_resp_send(req, DOCS_INDEX_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
@@ -422,6 +561,7 @@ static esp_err_t h_profile_post(httpd_req_t *req)
     macro_ws_request_broadcast();
 
     httpd_resp_set_type(req, "application/json");
+    http_set_conn_close(req);
     httpd_resp_sendstr(req, "{\"ok\":true}");
     return ESP_OK;
 }
@@ -473,6 +613,7 @@ static esp_err_t h_profile_get(httpd_req_t *req)
     body[got] = '\0';
 
     httpd_resp_set_type(req, "application/json");
+    http_set_conn_close(req);
     esp_err_t ret = httpd_resp_send(req, body, (ssize_t)got);
     free(body);
     return ret;
@@ -483,6 +624,7 @@ static esp_err_t h_next_script_post(httpd_req_t *req)
     (void)req;
     macro_profile_http_next_script();
     httpd_resp_set_type(req, "application/json");
+    http_set_conn_close(req);
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
@@ -491,28 +633,40 @@ static esp_err_t h_toggle_macros_post(httpd_req_t *req)
     (void)req;
     macro_profile_http_toggle_macros();
     httpd_resp_set_type(req, "application/json");
+    http_set_conn_close(req);
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
 static void http_server_start(void)
 {
+    if (s_http_started) {
+        return;
+    }
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.stack_size = 8192;
+    cfg.stack_size = 12288;
     cfg.server_port = 80;
     cfg.lru_purge_enable = true;
+    /* ESP-IDF reserves 3 lwIP sockets for the HTTP server (see httpd_start error text). */
+    cfg.max_open_sockets = CONFIG_LWIP_MAX_SOCKETS - 3;
+    if (cfg.max_open_sockets < 1) {
+        cfg.max_open_sockets = 1;
+    }
     cfg.max_uri_handlers = 24;
 #if CONFIG_HTTPD_WS_SUPPORT
     cfg.close_fn = macro_ws_httpd_close_cb;
 #endif
 
     httpd_handle_t server = NULL;
+    ESP_LOGI(TAG, "HTTP max_open_sockets=%d (CONFIG_LWIP_MAX_SOCKETS=%d)",
+             cfg.max_open_sockets, CONFIG_LWIP_MAX_SOCKETS);
+
     esp_err_t ret = httpd_start(&server, &cfg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(ret));
         return;
     }
 
-#if CONFIG_HTTPD_WS_SUPPORT
+#if CONFIG_HTTPD_WS_SUPPORT && (CONFIG_LWIP_MAX_SOCKETS >= 16)
     macro_ws_init(server);
 #endif
 
@@ -552,14 +706,18 @@ static void http_server_start(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &u_prof_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &u_next));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &u_tog));
-#if CONFIG_HTTPD_WS_SUPPORT
+#if CONFIG_HTTPD_WS_SUPPORT && (CONFIG_LWIP_MAX_SOCKETS >= 16)
     httpd_uri_t u_ws = {.uri = "/ws", .method = HTTP_GET, .handler = macro_ws_handler, .user_ctx = NULL,
                         .is_websocket = true};
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &u_ws));
     ESP_LOGI(TAG, "HTTP server on port 80 (WebSocket /ws enabled)");
+#elif CONFIG_HTTPD_WS_SUPPORT
+    ESP_LOGW(TAG, "HTTP server on port 80 (WebSocket off: CONFIG_LWIP_MAX_SOCKETS=%d, need >=16)",
+             CONFIG_LWIP_MAX_SOCKETS);
 #else
-    ESP_LOGI(TAG, "HTTP server on port 80 (WebSocket disabled in sdkconfig; enable CONFIG_HTTPD_WS_SUPPORT)");
+    ESP_LOGI(TAG, "HTTP server on port 80 (WebSocket disabled in sdkconfig)");
 #endif
+    s_http_started = true;
 }
 
 void macro_web_start(void)
@@ -582,17 +740,17 @@ void macro_web_start(void)
 
     esp_netif_t *netif = NULL;
 #if CONFIG_MACRO_WIFI_ROLE_STA
-    if (!wifi_start_sta(&netif)) {
-        return;
+    (void)wifi_start_sta(&netif);
+    if (!s_http_started) {
+        ESP_LOGW(TAG, "USB/macros start without web UI; HTTP starts when Wi-Fi gets an IP");
     }
 #else
     if (!wifi_start_ap(&netif)) {
         return;
     }
-#endif
     (void)netif;
-
     http_server_start();
+#endif
 }
 
 #else /* !CONFIG_MACRO_WEB_UI */

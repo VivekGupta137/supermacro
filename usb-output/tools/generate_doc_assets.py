@@ -24,6 +24,8 @@ def main() -> int:
 
     docs_dir = Path(sys.argv[1])
     out_header = Path(sys.argv[2])
+    component_dir = out_header.parent
+    web_index = component_dir / "web" / "index.html"
     files = [
         "QUICK_WALKTHROUGH.md",
         "PROFILE_SCHEMA.md",
@@ -45,6 +47,12 @@ def main() -> int:
         cstr = json.dumps(txt, ensure_ascii=False)
         lines.append(f"static const char DOC_{sym}[] = {cstr};")
         lines.append(f"static const unsigned DOC_{sym}_LEN = (unsigned)(sizeof(DOC_{sym}) - 1);")
+        lines.append("")
+
+    if web_index.is_file():
+        html = web_index.read_text(encoding="utf-8")
+        lines.append(f"static const char WEB_INDEX_HTML[] = {json.dumps(html, ensure_ascii=False)};")
+        lines.append("static const unsigned WEB_INDEX_HTML_LEN = (unsigned)(sizeof(WEB_INDEX_HTML) - 1);")
         lines.append("")
 
     out_header.write_text("\n".join(lines) + "\n", encoding="utf-8")

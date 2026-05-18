@@ -4,6 +4,8 @@ This guide explains how macro profiles are interpreted by firmware, how timed se
 
 For field-by-field schema reference, see `docs/PROFILE_SCHEMA.md`.
 
+**Ready-made JSON:** see **Usage examples** in `docs/PROFILE_SCHEMA.md` and the files under `profiles/` (`mouse_only_example.json`, `example_v2_multiscript.json`, `example_interp_additive.json`).
+
 ---
 
 ## 1) Mental Model

@@ -26,6 +26,10 @@
 // Enable debug log, (it impacts performance)
 #define DEBUG_LOG 0
 
+// Throttled SPI/macro/USB stats (one line per second when enabled). Off by default — UART is slow.
+#define USB_OUTPUT_PERF_LOG_ENABLE 0
+#define USB_OUTPUT_PERF_LOG_WINDOW_MS 1000
+
 // ---
 // --- TinyUSB descriptors
 // ---

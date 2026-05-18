@@ -2,6 +2,8 @@
 #include "config.h"
 
 #include "macro_profile.h"
+#include "perf_log.h"
+#include "macpass_hid.h"
 
 #include <string.h>
 
@@ -11,6 +13,55 @@
 hid_keyboard_report_t last_keyboard_report[HISTORY_SIZE];
 hid_mouse_report_t last_mouse_report;
 group_sequence_t group_sequence;
+
+static bool sequence_timer_active(const key_modification_sequence_t *seq)
+{
+    if (seq->timer == NULL) {
+        return false;
+    }
+    return esp_timer_is_active(seq->timer);
+}
+
+static bool sequence_is_running(const key_modification_sequence_t *seq)
+{
+    return seq->pos > 0 || sequence_timer_active(seq);
+}
+
+static void macro_reset_mode_set_peers(int started_idx, uint8_t mode_set)
+{
+    if (mode_set == 0) {
+        return;
+    }
+    for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++) {
+        if (i == started_idx) {
+            continue;
+        }
+        key_modification_sequence_t *peer = &group_sequence.list[i];
+        if (peer->size == 0 || peer->mode_set != mode_set) {
+            continue;
+        }
+        if (sequence_is_running(peer)) {
+            reset_sequence(peer);
+        }
+    }
+}
+
+/** Stop macros whose press chord is no longer held (v3 exact/chord modes). */
+static void macro_mouse_sync_running_sequences(void)
+{
+    for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++) {
+        key_modification_sequence_t *seq = &group_sequence.list[i];
+        if (seq->size == 0 || seq->event_press.header != HEADER_HID_MOUSE) {
+            continue;
+        }
+        if (!sequence_is_running(seq)) {
+            continue;
+        }
+        if (!mouse_chord_held(last_mouse_report, seq->event_press.event.mouse, seq->press_exact)) {
+            reset_sequence(seq);
+        }
+    }
+}
 
 static SemaphoreHandle_t s_seq_mux;
 
@@ -59,6 +110,17 @@ void macro_init(void)
 {
     macro_seq_mux_init();
     macro_sequence_install_timers();
+#if USB_OUTPUT_PERF_LOG_ENABLE
+    int armed = 0;
+    for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++) {
+        if (group_sequence.list[i].size > 0 && group_sequence.list[i].timer != NULL) {
+            armed++;
+        }
+    }
+    ESP_LOGI(LOG_TITLE, "macro_init: macrosOn=%d additiveMouse=%d sequences armed=%d profile=%s",
+             (int)macro_profile_macros_enabled(), (int)macro_profile_additive_mouse_enabled(), armed,
+             macro_profile_get_name());
+#endif
 }
 
 void macro_sequences_apply(const group_sequence_t *src)
@@ -69,6 +131,7 @@ void macro_sequences_apply(const group_sequence_t *src)
     macro_sequence_teardown_timers();
     xSemaphoreTake(s_seq_mux, portMAX_DELAY);
     memcpy(&group_sequence, src, sizeof(group_sequence_t));
+    macro_profile_sync_active_group_scales(&group_sequence);
     macro_sequence_install_timers();
     xSemaphoreGive(s_seq_mux);
 }
@@ -127,7 +190,9 @@ void macro_posthook_transmission(hid_transmit_t* report){
         for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++){
             key_modification_sequence_t* sequence = &group_sequence.list[i];
             // Ignore empty sequence
-            if (sequence->size == 0) break;
+            if (sequence->size == 0) {
+                continue;
+            }
             if (!macro_profile_macros_enabled()) {
                 continue;
             }
@@ -138,6 +203,10 @@ void macro_posthook_transmission(hid_transmit_t* report){
                 #if DEBUG_LOG
                 ESP_LOGI(pcTaskGetName(NULL), "posthook(): Starting keyboard press macro: %s", sequence->timer_args.name);
                 #endif
+#if USB_OUTPUT_PERF_LOG_ENABLE
+                ESP_LOGI(LOG_TITLE, "macro start: %s (keyboard press)", sequence->timer_args.name);
+                perf_stat_bump(PERF_MACRO_START);
+#endif
                 reset_sequence(sequence);
                 start_sequence(sequence);
             }
@@ -146,6 +215,10 @@ void macro_posthook_transmission(hid_transmit_t* report){
                 #if DEBUG_LOG
                 ESP_LOGI(pcTaskGetName(NULL), "posthook(): Starting keyboard release macro: %s", sequence->timer_args.name);
                 #endif
+#if USB_OUTPUT_PERF_LOG_ENABLE
+                ESP_LOGI(LOG_TITLE, "macro start: %s (keyboard release)", sequence->timer_args.name);
+                perf_stat_bump(PERF_MACRO_START);
+#endif
                 reset_sequence(sequence);
                 start_sequence(sequence);
             }
@@ -185,21 +258,32 @@ void macro_posthook_transmission(hid_transmit_t* report){
         for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++){
             key_modification_sequence_t* sequence = &group_sequence.list[i];
             // Ignore empty sequence
-            if (sequence->size == 0) break;
+            if (sequence->size == 0) {
+                continue;
+            }
             if (!macro_profile_macros_enabled()) {
                 continue;
             }
             // If a press key is defined for sequence
             if (sequence->event_press.header == HEADER_HID_MOUSE &&
-                mouse_report_contains_event(last_mouse_report, sequence->event_press.event.mouse) &&
-                !mouse_report_contains_event(prev_mouse, sequence->event_press.event.mouse)){
+                mouse_chord_rising(last_mouse_report, prev_mouse, sequence->event_press.event.mouse,
+                                   sequence->press_exact)) {
                 #if DEBUG_LOG
                 ESP_LOGI(pcTaskGetName(NULL), "posthook(): Starting mouse press macro: %s", sequence->timer_args.name);
                 #endif
+#if USB_OUTPUT_PERF_LOG_ENABLE
+                ESP_LOGI(LOG_TITLE, "macro start: %s (mouse press want=0x%02X cur=0x%02X prev=0x%02X steps=%u)",
+                         sequence->timer_args.name, (unsigned)sequence->event_press.event.mouse.buttons,
+                         (unsigned)last_mouse_report.buttons, (unsigned)prev_mouse.buttons,
+                         (unsigned)sequence->size);
+                perf_stat_bump(PERF_MACRO_START);
+#endif
+                macro_reset_mode_set_peers(i, sequence->mode_set);
                 reset_sequence(sequence);
                 start_sequence(sequence);
             }
         }
+        macro_mouse_sync_running_sequences();
         xSemaphoreGive(s_seq_mux);
     }
 }
@@ -220,7 +304,6 @@ void macro_sequence_callback(void* arg) {
     } else if (macro_event.header == HEADER_HID_MOUSE) {
         copy_report.header = HEADER_HID_MOUSE;
         copy_report.event.mouse = last_mouse_report;
-        copy_report.event.mouse.x = 0; copy_report.event.mouse.y = 0; copy_report.event.mouse.wheel = 0;
     } else {
         #if DEBUG_LOG
         ESP_LOGI(pcTaskGetName(NULL), "macro_sequence(): Invalid macro sequence n°%d (header: %d): %s", key_seq->pos, macro_event.header, key_seq->timer_args.name);
@@ -243,8 +326,23 @@ void macro_sequence_callback(void* arg) {
         add_event_to_report(&copy_report, sequence->previous_key);
     }
     xSemaphoreGive(s_seq_mux);
-    // In case of mouse, add mouvement to report
-    if (macro_event.header == HEADER_HID_MOUSE) set_mouse_movement_to_report(&copy_report.event.mouse, macro_event.event.mouse);
+    if (macro_event.header == HEADER_HID_MOUSE) {
+        /* Macro tick: apply script deltas only (buttons still from last_mouse_report).
+         * User aim deltas arrive on separate SPI reports; do not add them here. */
+        copy_report.event.mouse.x = 0;
+        copy_report.event.mouse.y = 0;
+        copy_report.event.mouse.wheel = 0;
+        copy_report.event.mouse.pan = 0;
+        /* Deltas are scaled at profile parse (eDPI × gun scale); use step values as-is. */
+        set_mouse_movement_to_report(&copy_report.event.mouse, macro_event.event.mouse);
+#if USB_OUTPUT_PERF_LOG_ENABLE
+        perf_stat_bump(PERF_MACRO_TICK_MOUSE);
+#endif
+    } else if (macro_event.header == HEADER_HID_KEYBOARD) {
+#if USB_OUTPUT_PERF_LOG_ENABLE
+        perf_stat_bump(PERF_MACRO_TICK_KBD);
+#endif
+    }
 
     // Send the modified report to the HID task for USB transmission
     #if DEBUG_LOG
@@ -268,7 +366,8 @@ void macro_sequence_callback(void* arg) {
     // (but in a loop the press key must still be pressed)
     if (key_seq->loop && (
          (key_seq->event_press.header == HEADER_HID_KEYBOARD && !keyboard_report_contains_event(last_keyboard_report[0], key_seq->event_press.event.keyboard)) ||
-         (key_seq->event_press.header == HEADER_HID_MOUSE && !mouse_report_contains_event(last_mouse_report, key_seq->event_press.event.mouse))
+         (key_seq->event_press.header == HEADER_HID_MOUSE &&
+          !mouse_chord_held(last_mouse_report, key_seq->event_press.event.mouse, key_seq->press_exact))
         )
        ){
         reset_sequence(key_seq);

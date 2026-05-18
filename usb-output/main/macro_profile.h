@@ -9,6 +9,18 @@ void macro_profile_init(const group_sequence_t *fallback);
 const char *macro_profile_get_name(void);
 
 bool macro_profile_macros_enabled(void);
+/** When true (default), macro mouse deltas add to the user's current mouse deltas on each tick. */
+bool macro_profile_additive_mouse_enabled(void);
+/** User eDPI from profile (0 = unset). */
+float macro_profile_get_edpi(void);
+/** Reference eDPI patterns were authored for (default 800). */
+float macro_profile_get_pattern_edpi(void);
+/** Global multiplier: user eDPI / pattern eDPI (1.0 if unset). */
+float macro_profile_get_edpi_scale(void);
+/** Combined scale for macro group index (0..MAX_KEY_MODIFICATION_SEQUENCE-1). */
+float macro_profile_sequence_mouse_scale(int group_index);
+/** Refresh runtime scale table after `group_sequence` is updated. */
+void macro_profile_sync_active_group_scales(const group_sequence_t *gs);
 uint8_t macro_profile_script_count(void);
 uint8_t macro_profile_active_script_index(void);
 const char *macro_profile_script_name(uint8_t index);

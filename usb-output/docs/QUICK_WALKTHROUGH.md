@@ -33,10 +33,11 @@ This is the fastest path to get a working profile on the device.
 
 ## 6) Schema references
 
-- Profile schema details: `docs/PROFILE_SCHEMA.md`
-- Example profiles:
-  - `profiles/mouse_only_example.json`
-  - `profiles/example_v2_multiscript.json`
+- Profile schema details: `docs/PROFILE_SCHEMA.md` (includes **copy-paste usage examples**: discrete steps, `mouse`→`mouseTo` interpolation, chords, v2 banks, `additiveMouse`)
+- Example profiles in the repo:
+  - `profiles/mouse_only_example.json` — v1, several triggers (side button, RMB, middle, back)
+  - `profiles/example_v2_multiscript.json` — v2, two scripts, `nextScript` / `toggleMacros`, interp + chord examples
+  - `profiles/example_interp_additive.json` — v1 minimal **interpolation + additive mouse** demo
 
 ## 7) All docs
 

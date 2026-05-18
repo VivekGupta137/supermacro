@@ -1,5 +1,7 @@
 // Import global project config
 #include "config.h"
+#include "perf_log.h"
+#include "macpass_hid.h"
 
 spi_slave_transaction_t spi_transaction_hid_receiver;
 spi_hid_transmit_t* spi_hid_buffer;
@@ -37,8 +39,16 @@ void spi_task_slave_hid_receiver(void *pvParameters){
         #if DEBUG_LOG
         ESP_LOGI(pcTaskGetName(NULL), "SPI received transmission of type => %x", spi_hid_buffer->hid.header);
         #endif
-        
-        
+#if USB_OUTPUT_PERF_LOG_ENABLE
+        if (spi_hid_buffer->hid.header == HEADER_HID_KEYBOARD) {
+            perf_stat_bump(PERF_SPI_KBD);
+        } else if (spi_hid_buffer->hid.header == HEADER_HID_MOUSE) {
+            perf_stat_bump(PERF_SPI_MOUSE);
+        } else {
+            perf_stat_bump(PERF_SPI_OTHER);
+        }
+#endif
+
         // Process HID report
         //// Pre-hook keyboard USB transmission
         if (macro_prehook_transmission(&spi_hid_buffer->hid)) continue;

@@ -21,7 +21,7 @@
 
 static const char *TAG = "macro_ws";
 
-#define MAX_WS_CLIENTS 6
+#define MAX_WS_CLIENTS 1
 
 static httpd_handle_t s_httpd;
 static int s_ws_fds[MAX_WS_CLIENTS];
@@ -60,14 +60,32 @@ static void macro_ws_register_fd(int fd)
 {
     xSemaphoreTake(s_ws_mu, portMAX_DELAY);
     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
-        if (s_ws_fds[i] < 0) {
-            s_ws_fds[i] = fd;
+        if (s_ws_fds[i] == fd) {
             xSemaphoreGive(s_ws_mu);
             return;
         }
     }
+    int slot = -1;
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+        if (s_ws_fds[i] < 0) {
+            slot = i;
+            break;
+        }
+    }
+    int evict_fd = -1;
+    if (slot < 0) {
+        evict_fd = s_ws_fds[0];
+        for (int i = 1; i < MAX_WS_CLIENTS; i++) {
+            s_ws_fds[i - 1] = s_ws_fds[i];
+        }
+        slot = MAX_WS_CLIENTS - 1;
+    }
+    s_ws_fds[slot] = fd;
     xSemaphoreGive(s_ws_mu);
-    ESP_LOGW(TAG, "WebSocket client table full; fd %d not tracked", fd);
+    if (evict_fd >= 0 && s_httpd != NULL) {
+        ESP_LOGW(TAG, "closing older WebSocket fd=%d for new fd=%d", evict_fd, fd);
+        httpd_sess_trigger_close(s_httpd, evict_fd);
+    }
 }
 
 static void broadcast_work_fn(void *arg)

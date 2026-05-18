@@ -18,6 +18,12 @@ typedef struct {
     hid_transmit_t event_release; // Detect on release
     hid_transmit_t save_press; // Press to save a sequence
     bool loop; // Play the sequence on a loop
+    /** (eDPI / patternEDPI) * script/group `scale`; 1.0 = no scaling. */
+    float mouse_scale;
+    /** v3: true = button mask must match exactly (LMB-only vs LMB+RMB). */
+    bool press_exact;
+    /** v3: peers with same non-zero set stop each other when a new mode starts. */
+    uint8_t mode_set;
 
     // --- Computed
     hid_transmit_t previous_key;

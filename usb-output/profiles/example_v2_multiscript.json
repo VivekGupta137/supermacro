@@ -10,10 +10,10 @@
       "name": "rifle",
       "groups": [
         {
-          "comment": "Hold right: tiny horizontal wiggle while held",
+          "comment": "Hold right: pull down (direct mouse deltas per step)",
           "steps": [
-            { "us": 8000, "mouse": { "x": 2, "y": 0 } },
-            { "us": 8000, "mouse": { "x": -2, "y": 0 } }
+            { "us": 3000, "mouse": { "x": 0, "y": 1 } },
+            { "us": 3000, "mouse": { "x": 0, "y": 1 } }
           ],
           "n": 2,
           "loop": true,

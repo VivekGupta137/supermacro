@@ -73,14 +73,14 @@ const group_sequence_t macro_sequence_default = {
         },
         {
             .list = {
-                {50 * 1000, MOUSE_MOUVEMENT(-10, 10)},
+                {50 * 1000, MOUSE_MOUVEMENT(0, 3)},
             },
-            .size = 29,
+            .size = 1,
             .loop = true,
             .event_press = ONE_MOUSE_KEY(MOUSE_BUTTON_RIGHT),
         },
         {
-            .size = 1,
+            .size = 0,
             .save_press = ONE_KEYBOARD_KEY(HID_KEY_KEYPAD_SUBTRACT),
             .event_press = ONE_KEYBOARD_KEY(HID_KEY_KEYPAD_ADD),
         },
