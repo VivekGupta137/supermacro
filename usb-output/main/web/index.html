@@ -1,782 +1,149 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MacroPassthrough</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            surface: { DEFAULT: '#18181b', card: '#27272a', border: '#3f3f46' }
-          }
-        }
-      }
-    };
-  </script>
-  <style>
-    /* Offline / SoftAP fallback when CDN unavailable */
-    body { font-family: system-ui, sans-serif; background: #18181b; color: #e4e4e7; margin: 0; }
-    .wrap { max-width: 56rem; margin: 0 auto; padding: 1rem 1.25rem 2rem; }
-    .card { background: #27272a; border: 1px solid #3f3f46; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
-    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #3f3f46; }
-    th { color: #a1a1aa; font-weight: 600; }
-    textarea { width: 100%; min-height: 12rem; background: #09090b; color: #e4e4e7; border: 1px solid #3f3f46; border-radius: 0.375rem; padding: 0.5rem; font-family: ui-monospace, monospace; font-size: 0.75rem; }
-    .btn { display: inline-block; padding: 0.5rem 1rem; border-radius: 0.375rem; font-size: 0.875rem; cursor: pointer; border: none; margin-right: 0.5rem; margin-bottom: 0.5rem; }
-    .btn-pri { background: #2563eb; color: #fff; }
-    .btn-sec { background: #3f3f46; color: #fff; }
-    .badge-on { background: #166534; color: #bbf7d0; padding: 0.125rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; }
-    .badge-off { background: #7f1d1d; color: #fecaca; padding: 0.125rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; }
-    .slot-btn { position: relative; display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.5rem 0.85rem; border-radius: 0.375rem; font-size: 0.8125rem; font-weight: 500; color: #fff; border: 2px solid transparent; cursor: pointer; margin: 0 0.5rem 0.5rem 0; }
-    .slot-btn .slot-active { position: absolute; top: -0.4rem; right: -0.25rem; font-size: 0.625rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; background: #fef08a; color: #14532d; padding: 0.05rem 0.35rem; border-radius: 9999px; line-height: 1.2; }
-    .slot-btn.is-active { border-color: #fef08a; box-shadow: 0 0 0 1px rgba(254,240,138,0.35); }
-    a { color: #60a5fa; }
-    input[type=file].hidden-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Macro</title>
+<link rel="icon" href="data:,">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.5/ace.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.5/mode-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.5/theme/tomorrow_night.min.js"></script>
 </head>
-<body class="bg-zinc-900 text-zinc-100 min-h-screen antialiased">
-  
-  
-  <div class="wrap max-w-4xl mx-auto px-4 py-6 pb-12">
-    <header class="flex flex-wrap items-center justify-between gap-3 mb-4">
-      <h1 class="text-xl font-semibold tracking-tight">MacroPassthrough</h1>
-      <nav class="text-sm text-zinc-500 flex flex-wrap gap-x-3 gap-y-1">
-        <a href="/docs" class="text-blue-400 hover:underline">Docs</a>
-        <a href="/documentation" class="text-blue-400 hover:underline">Walkthrough</a>
-        <a href="/docs/profile-schema" class="text-blue-400 hover:underline">Schema</a>
-      </nav>
-    </header>
+<body class="bg-zinc-900 text-zinc-100 antialiased min-h-screen">
+<main class="max-w-2xl mx-auto p-4 space-y-4">
+  <header class="flex items-center justify-between gap-2">
+    <h1 class="text-lg font-semibold">MacroPassthrough</h1>
+    <a href="/docs/profile-schema" class="text-sm text-blue-400 hover:underline">Schema docs</a>
+  </header>
 
-    <section class="card bg-zinc-800 border border-zinc-700 rounded-lg p-4 mb-4">
-      <div class="flex flex-wrap gap-2 mb-4">
-        <button type="button" id="btn-next" class="btn btn-sec bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-md font-medium">Next weapon</button>
-        <button type="button" id="btn-toggle" class="btn btn-sec bg-zinc-600 hover:bg-zinc-500 text-white text-sm px-4 py-2 rounded-md">Toggle macros</button>
-        <button type="button" id="btn-fetch" class="btn btn-sec bg-zinc-600 hover:bg-zinc-500 text-white text-sm px-4 py-2 rounded-md">Reload JSON</button>
-        <button type="button" id="btn-refresh" class="btn btn-sec bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-sm px-3 py-2 rounded-md">Refresh</button>
-      </div>
-      <div class="flex flex-wrap items-center gap-2 mb-2">
-        <span id="macros-badge" class="badge-off text-xs font-medium px-2 py-0.5 rounded-full">macros —</span>
-        <span id="schema-badge" class="text-xs bg-zinc-700 text-zinc-300 px-2 py-0.5 rounded-full">v—</span>
-        <span id="weapon-idx" class="text-xs text-zinc-500"></span>
-      </div>
-      <p class="text-2xl font-semibold leading-tight" id="weapon-name">—</p>
-      <p class="text-sm text-zinc-500 mt-0.5" id="profile-name">—</p>
-      <p class="text-sm text-zinc-300 mt-3 leading-relaxed" id="weapon-comment">—</p>
-      <p class="text-xs text-zinc-500 mt-3" id="modes-summary">—</p>
-      <p class="text-xs text-zinc-600 mt-1" id="edpi-line">—</p>
-    </section>
-
-    <details class="card bg-zinc-800 border border-zinc-700 rounded-lg p-4 mb-4">
-      <summary class="text-sm font-medium text-zinc-400 cursor-pointer">Modes &amp; bindings</summary>
-      <h3 class="text-xs uppercase tracking-wide text-zinc-500 mt-4 mb-2">Modes (active weapon)</h3>
-      <div class="overflow-x-auto mb-6">
-        <table id="modes-table" class="w-full text-sm">
-          <thead>
-            <tr class="text-zinc-400 border-b border-zinc-700">
-              <th class="py-2 pr-3">#</th>
-              <th class="py-2 pr-3">Name</th>
-              <th class="py-2 pr-3">Press</th>
-              <th class="py-2 pr-3">Match</th>
-              <th class="py-2 pr-3">Scale</th>
-              <th class="py-2">Comment</th>
-            </tr>
-          </thead>
-          <tbody id="modes-body">
-            <tr><td colspan="6" class="py-4 text-zinc-500">Load profile…</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <h3 class="text-xs uppercase tracking-wide text-zinc-500 mb-2">Button mappings</h3>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="text-zinc-400 border-b border-zinc-700">
-              <th class="py-2 pr-3">Action</th>
-              <th class="py-2 pr-3">Binding</th>
-              <th class="py-2">Source</th>
-            </tr>
-          </thead>
-          <tbody id="bindings-body">
-            <tr><td colspan="3" class="py-4 text-zinc-500">—</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </details>
-
-    <section class="card bg-zinc-800 border border-zinc-700 rounded-lg p-4 mb-4">
-      <h2 class="text-sm font-semibold uppercase tracking-wide text-zinc-400 mb-2">Browser profiles</h2>
-      <p class="text-xs text-zinc-500 mb-3">Saved in this browser only. Click a slot to upload &amp; apply on the device. The last active slot is kept as <em>previous</em> so you can switch back.</p>
-      <div id="local-profiles" class="flex flex-wrap items-start mb-3 min-h-[2rem]">
-        <span class="text-xs text-zinc-500">No saved profiles yet.</span>
-      </div>
-      <div class="flex flex-wrap gap-2 mb-4">
-        <button type="button" id="btn-save-local" class="btn btn-sec bg-zinc-600 hover:bg-zinc-500 text-white text-sm px-3 py-2 rounded-md">Save editor to browser</button>
-        <button type="button" id="btn-import-file" class="btn btn-sec bg-zinc-600 hover:bg-zinc-500 text-white text-sm px-3 py-2 rounded-md">Import JSON file</button>
-        <button type="button" id="btn-download" class="btn btn-sec bg-zinc-600 hover:bg-zinc-500 text-white text-sm px-3 py-2 rounded-md">Download JSON</button>
-        <button type="button" id="btn-apply-previous" class="btn btn-sec bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-sm px-3 py-2 rounded-md hidden">Apply previous</button>
-        <input type="file" id="import-file" accept=".json,application/json" class="hidden-input">
-      </div>
-    </section>
-
-    <section class="card bg-zinc-800 border border-zinc-700 rounded-lg p-4 mb-4">
-      <h2 class="text-sm font-semibold uppercase tracking-wide text-zinc-400 mb-2">Upload profile</h2>
-      <p class="text-xs text-zinc-500 mb-3">JSON with <code class="bg-zinc-900 px-1 rounded">"v": 1</code>, <code class="bg-zinc-900 px-1 rounded">2</code>, or <code class="bg-zinc-900 px-1 rounded">3</code>. Upload minifies before send; reload from device beautifies the editor.</p>
-      <form id="upload-form">
-        <textarea id="profile-json" class="w-full min-h-48 bg-zinc-950 border border-zinc-700 rounded-md p-3 font-mono text-xs text-zinc-200" spellcheck="false"></textarea>
-        <div class="mt-3 flex flex-wrap gap-2 items-center">
-          <button type="submit" class="btn btn-pri bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-md">Upload &amp; apply</button>
-          <span id="upload-msg" class="text-sm text-zinc-400"></span>
-        </div>
-      </form>
-    </section>
-
-    <details class="card bg-zinc-800 border border-zinc-700 rounded-lg p-4">
-      <summary class="text-sm font-medium text-zinc-400 cursor-pointer">Raw status JSON</summary>
-      <pre id="status-raw" class="mt-3 text-xs bg-zinc-950 border border-zinc-700 rounded-md p-3 overflow-x-auto text-zinc-300">—</pre>
-    </details>
-
-    <p class="text-xs text-zinc-600 mt-6 text-center">Tailwind via CDN when online; embedded fallback CSS works on SoftAP without internet.</p>
+  <div class="flex flex-wrap gap-2">
+    <button type="button" id="btn-toggle" class="px-4 py-2 rounded-md text-sm font-medium text-white bg-zinc-600">Macros OFF</button>
+    <button type="button" id="btn-reload" class="px-4 py-2 rounded-md text-sm bg-zinc-700 hover:bg-zinc-600">Reload</button>
+    <button type="button" id="btn-upload" class="px-4 py-2 rounded-md text-sm bg-blue-600 hover:bg-blue-500 text-white">Upload</button>
   </div>
 
-  <script>
+  <section class="text-sm space-y-1 border border-zinc-700 rounded-lg p-3 bg-zinc-800/50">
+    <p><span class="text-zinc-500">Macro:</span> <span id="v-profile" class="font-medium">—</span></p>
+    <p><span class="text-zinc-500">Gun:</span> <span id="v-gun" class="font-medium">—</span></p>
+    <p><span class="text-zinc-500">Script:</span> <span id="v-script" class="font-medium">—</span></p>
+    <p><span class="text-zinc-500">Status:</span> <span id="v-status">—</span></p>
+    <p id="v-conn" class="text-xs text-zinc-500 pt-1">Connecting…</p>
+  </section>
+
+  <div id="profile-json" class="w-full h-72 rounded-md border border-zinc-700 overflow-hidden"></div>
+  <p id="msg" class="text-xs text-zinc-500"></p>
+</main>
+<script>
 (function () {
-  var state = { status: null, profile: null, profileText: '' };
-  var STORAGE_KEY = 'macpass_browser_profiles_v1';
-  var MAX_LOCAL_PROFILES = 12;
-
-  var SLOT_COLORS = [
-    { bg: 'bg-violet-600', hover: 'hover:bg-violet-500' },
-    { bg: 'bg-amber-600', hover: 'hover:bg-amber-500' },
-    { bg: 'bg-sky-600', hover: 'hover:bg-sky-500' },
-    { bg: 'bg-rose-600', hover: 'hover:bg-rose-500' },
-    { bg: 'bg-teal-600', hover: 'hover:bg-teal-500' },
-    { bg: 'bg-orange-600', hover: 'hover:bg-orange-500' },
-    { bg: 'bg-fuchsia-600', hover: 'hover:bg-fuchsia-500' },
-    { bg: 'bg-lime-700', hover: 'hover:bg-lime-600' }
-  ];
-  var ACTIVE_COLOR = { bg: 'bg-emerald-600', hover: 'hover:bg-emerald-500' };
-
-  var BTN_BITS = [
-    { v: 1, label: 'LMB' },
-    { v: 2, label: 'RMB' },
-    { v: 4, label: 'MMB' },
-    { v: 8, label: 'Back' },
-    { v: 16, label: 'Fwd' }
-  ];
-
-  function esc(s) {
-    if (s == null) return '';
-    return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
-
-  function describeButtons(b) {
-    var n = Number(b) | 0;
-    if (!n) return '—';
-    var parts = [];
-    BTN_BITS.forEach(function (x) {
-      if (n & x.v) parts.push(x.label);
+  var q = Promise.resolve(), ab = null;
+  var editor = ace.edit('profile-json');
+  editor.setTheme('ace/theme/tomorrow_night');
+  editor.session.setMode('ace/mode/json');
+  editor.session.setUseWorker(false);
+  editor.setOptions({ fontSize: 12, showPrintMargin: false, tabSize: 2, useSoftTabs: true });
+  function $(id) { return document.getElementById(id); }
+  function pad(n) { return '  '.repeat(n); }
+  function formatValue(val, indent) {
+    if (val === null) return 'null';
+    if (typeof val !== 'object') return JSON.stringify(val);
+    if (Array.isArray(val)) {
+      if (!val.length) return '[]';
+      return '[\n' + val.map(function (item) {
+        return pad(indent + 1) + formatValue(item, indent + 1);
+      }).join(',\n') + '\n' + pad(indent) + ']';
+    }
+    var keys = Object.keys(val);
+    if (!keys.length) return '{}';
+    var lines = keys.map(function (k) {
+      var v = val[k];
+      if (k === 'steps' && Array.isArray(v)) {
+        var steps = v.map(function (s) { return pad(indent + 1) + JSON.stringify(s); });
+        return pad(indent + 1) + '"steps": [\n' + steps.join(',\n') + '\n' + pad(indent + 1) + ']';
+      }
+      return pad(indent + 1) + JSON.stringify(k) + ': ' + formatValue(v, indent + 1);
     });
-    return parts.length ? parts.join(' + ') + ' (b=' + n + ')' : 'b=' + n;
+    return '{\n' + lines.join(',\n') + '\n' + pad(indent) + '}';
   }
-
-  function describeTrigger(trig) {
-    if (!trig || typeof trig !== 'object') return '—';
-    if (trig.mouse && trig.mouse.b != null) return describeButtons(trig.mouse.b);
-    if (trig.kbd) {
-      var k = trig.kbd.k || [];
-      return 'kbd m=' + (trig.kbd.m || 0) + ' k=[' + k.join(',') + ']';
-    }
-    return '—';
+  function setJson(t) {
+    try { editor.setValue(formatValue(JSON.parse(t), 0), -1); }
+    catch (e) { editor.setValue(t, -1); }
   }
-
-  function getBanks(profile) {
-    if (!profile) return [];
-    if (Array.isArray(profile.weapons)) return profile.weapons;
-    if (Array.isArray(profile.scripts)) return profile.scripts;
-    if (Array.isArray(profile.groups)) return [{ name: profile.name || 'default', groups: profile.groups }];
-    return [];
-  }
-
-  function getModes(bank) {
-    if (!bank) return [];
-    if (Array.isArray(bank.modes)) return bank.modes;
-    if (Array.isArray(bank.groups)) return bank.groups;
-    return [];
-  }
-
-  function modeScale(mode, status, idx) {
-    if (mode.modeScale != null) return Number(mode.modeScale);
-    if (mode.scale != null) return Number(mode.scale);
-    if (status && status.activeModeScales && status.activeModeScales[idx] != null) {
-      return Number(status.activeModeScales[idx]);
-    }
-    return 1;
-  }
-
-  function weaponComment(bank, modes) {
-    if (bank && bank.comment) return bank.comment;
-    var lines = [];
-    modes.forEach(function (m) {
-      if (m.comment) lines.push(m.comment);
-    });
-    if (lines.length) return lines.join(' · ');
-    return '';
-  }
-
-  function modesSummary(profile, status) {
-    var banks = getBanks(profile);
-    var wi = status ? activeWeaponIndex(status, profile) : 0;
-    var modes = getModes(banks[wi]);
-    if (!modes.length) return 'No modes for this weapon.';
-    var parts = modes.map(function (m, i) {
-      var name = m.name || 'mode ' + (i + 1);
-      var press = m.press ? describeTrigger(m.press) : '—';
-      return name + ' · ' + press;
-    });
-    return modes.length + ' mode' + (modes.length === 1 ? '' : 's') + ': ' + parts.join(' | ');
-  }
-
-  function activeWeaponIndex(status, profile) {
-    var ix = status.activeWeapon;
-    if (ix == null) ix = status.activeScript;
-    ix = Number(ix);
-    if (!isFinite(ix) || ix < 0) ix = 0;
-    var banks = getBanks(profile);
-    if (banks.length && ix >= banks.length) ix = 0;
-    return ix;
-  }
-
-  function renderBindings(profile) {
-    var tbody = document.getElementById('bindings-body');
-    var rows = [];
-    function add(action, trig, source) {
-      rows.push(
-        '<tr class="border-b border-zinc-700/80">' +
-        '<td class="py-2 pr-3">' + esc(action) + '</td>' +
-        '<td class="py-2 pr-3 font-mono text-xs">' + esc(describeTrigger(trig)) + '</td>' +
-        '<td class="py-2 text-zinc-400">' + esc(source) + '</td></tr>'
-      );
-    }
-    if (profile) {
-      var nx = profile.nextWeapon || profile.nextScript;
-      var tg = profile.toggleMacros;
-      if (nx) add('Next weapon / script', nx, 'profile root');
-      if (tg) add('Toggle macros', tg, 'profile root');
-      var banks = getBanks(profile);
-      var wi = state.status ? activeWeaponIndex(state.status, profile) : 0;
-      var modes = getModes(banks[wi]);
-      modes.forEach(function (m, i) {
-        if (m.press) {
-          var label = m.name ? 'Start: ' + m.name : 'Mode ' + (i + 1);
-          add(label, m.press, 'mode #' + (i + 1));
-        }
-      });
-    }
-    tbody.innerHTML = rows.length
-      ? rows.join('')
-      : '<tr><td colspan="3" class="py-4 text-zinc-500">No bindings in profile</td></tr>';
-  }
-
-  function renderModes(profile, status) {
-    var tbody = document.getElementById('modes-body');
-    var banks = getBanks(profile);
-    var wi = status ? activeWeaponIndex(status, profile) : 0;
-    var bank = banks[wi];
-    var modes = getModes(bank);
-    if (!modes.length) {
-      tbody.innerHTML =
-        '<tr><td colspan="6" class="py-4 text-zinc-500">No modes for this weapon (v1: use groups)</td></tr>';
-      return;
-    }
-    var html = [];
-    modes.forEach(function (m, i) {
-      var steps = m.steps ? m.steps.length : 0;
-      if (m.n != null) steps = Math.min(steps, Number(m.n));
-      var pm = m.pressMode === 'exact' ? 'exact' : 'chord';
-      html.push(
-        '<tr class="border-b border-zinc-700/80 hover:bg-zinc-700/30">' +
-        '<td class="py-2 pr-3 text-zinc-400">' + (i + 1) + '</td>' +
-        '<td class="py-2 pr-3 font-medium">' + esc(m.name || ('mode' + i)) + '</td>' +
-        '<td class="py-2 pr-3 font-mono text-xs">' + esc(describeTrigger(m.press)) + '</td>' +
-        '<td class="py-2 pr-3">' + esc(pm) + '</td>' +
-        '<td class="py-2 pr-3">' + modeScale(m, status, i).toFixed(3) + '</td>' +
-        '<td class="py-2 text-zinc-300 text-xs">' + esc(m.comment || '—') + '</td>' +
-        '</tr>'
-      );
-    });
-    tbody.innerHTML = html.join('');
-  }
-
-  function renderStatus(status) {
-    state.status = status;
-    document.getElementById('status-raw').textContent = JSON.stringify(status, null, 2);
-
-    document.getElementById('profile-name').textContent = status.profile || '—';
-    document.getElementById('schema-badge').textContent = 'v' + (status.schemaVer != null ? status.schemaVer : '?');
-
-    var mon = status.macrosOn;
-    var badge = document.getElementById('macros-badge');
-    if (mon === true) {
-      badge.textContent = 'macros on';
-      badge.className = 'badge-on text-xs font-medium px-2 py-0.5 rounded-full';
-    } else if (mon === false) {
-      badge.textContent = 'macros off';
-      badge.className = 'badge-off text-xs font-medium px-2 py-0.5 rounded-full';
-    } else {
-      badge.textContent = 'macros —';
-      badge.className = 'text-xs bg-zinc-700 text-zinc-300 px-2 py-0.5 rounded-full';
-    }
-
-    var wi = activeWeaponIndex(status, state.profile);
-    var wn =
-      status.activeWeaponName ||
-      status.activeScriptName ||
-      (status.scriptNames && status.scriptNames[wi]) ||
-      '—';
-    document.getElementById('weapon-name').textContent = wn;
-    var idxEl = document.getElementById('weapon-idx');
-    if (status.scriptCount > 1) {
-      idxEl.textContent = 'weapon ' + (wi + 1) + ' / ' + status.scriptCount;
-    } else {
-      idxEl.textContent = '';
-    }
-
-    var edpiLine = '';
-    if (status.eDPI > 0) {
-      var pat = status.patternEDPI != null ? status.patternEDPI : 800;
-      var sc = status.edpiScale != null ? Number(status.edpiScale).toFixed(3) : '1.000';
-      edpiLine = 'eDPI ' + status.eDPI + ' (ref ' + pat + ') · scale ' + sc;
-    }
-    document.getElementById('edpi-line').textContent = edpiLine;
-
-    if (state.profile) {
-      var banks = getBanks(state.profile);
-      var bank = banks[wi];
-      var modes = getModes(bank);
-      var note = weaponComment(bank, modes);
-      document.getElementById('weapon-comment').textContent = note || '—';
-      document.getElementById('modes-summary').textContent = modesSummary(state.profile, status);
-      renderModes(state.profile, status);
-      renderBindings(state.profile);
-    } else {
-      document.getElementById('modes-summary').textContent = '—';
-    }
-  }
-
-  function tryParseProfile(text) {
-    try {
-      state.profile = JSON.parse(text);
-      state.profileText = text;
-      return true;
-    } catch (e) {
-      state.profile = null;
-      return false;
-    }
-  }
-
-  function beautifyJson(text) {
-    return JSON.stringify(JSON.parse(text), null, 2);
-  }
-
-  function minifyJson(text) {
-    return JSON.stringify(JSON.parse(text));
-  }
-
-  function setEditorJson(text, beautify) {
-    var ta = document.getElementById('profile-json');
-    try {
-      ta.value = beautify ? beautifyJson(text) : minifyJson(text);
-      tryParseProfile(ta.value);
-    } catch (e) {
-      ta.value = text;
-      tryParseProfile(text);
-    }
-  }
-
-  function loadStore() {
-    try {
-      var raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return { profiles: [], activeId: null, previousId: null };
-      var s = JSON.parse(raw);
-      if (!s || !Array.isArray(s.profiles)) return { profiles: [], activeId: null, previousId: null };
-      return s;
-    } catch (e) {
-      return { profiles: [], activeId: null, previousId: null };
-    }
-  }
-
-  function saveStore(store) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-  }
-
-  function newId() {
-    return 'p_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-  }
-
-  function profileDisplayName(obj, parsed) {
-    if (obj.name) return obj.name;
-    if (parsed && parsed.name) return parsed.name;
-    return 'Profile';
-  }
-
-  function guessNameFromJson(parsed, fallback) {
-    if (parsed && parsed.name) return String(parsed.name);
-    if (fallback) return fallback.replace(/\.json$/i, '');
-    return 'Profile';
-  }
-
-  function findProfile(store, id) {
-    for (var i = 0; i < store.profiles.length; i++) {
-      if (store.profiles[i].id === id) return store.profiles[i];
-    }
-    return null;
-  }
-
-  function slotColorIndex(id, store) {
-    for (var i = 0; i < store.profiles.length; i++) {
-      if (store.profiles[i].id === id) return i % SLOT_COLORS.length;
-    }
-    return 0;
-  }
-
-  function renderLocalProfiles() {
-    var store = loadStore();
-    var wrap = document.getElementById('local-profiles');
-    var prevBtn = document.getElementById('btn-apply-previous');
-    if (!store.profiles.length) {
-      wrap.innerHTML = '<span class="text-xs text-zinc-500">No saved profiles yet.</span>';
-      prevBtn.classList.add('hidden');
-      return;
-    }
-    var html = [];
-    store.profiles.forEach(function (p) {
-      var isActive = p.id === store.activeId;
-      var c = isActive ? ACTIVE_COLOR : SLOT_COLORS[slotColorIndex(p.id, store)];
-      var label = esc(p.name || 'Profile');
-      html.push(
-        '<button type="button" class="slot-btn ' + c.bg + ' ' + c.hover + (isActive ? ' is-active' : '') + '" data-profile-id="' + esc(p.id) + '">' +
-        (isActive ? '<span class="slot-active">active</span>' : '') +
-        '<span>' + label + '</span></button>'
-      );
-    });
-    wrap.innerHTML = html.join('');
-    wrap.querySelectorAll('[data-profile-id]').forEach(function (btn) {
-      var pid = btn.getAttribute('data-profile-id');
-      btn.onclick = function () {
-        applyLocalProfile(pid);
-      };
-      btn.oncontextmenu = function (e) {
-        e.preventDefault();
-        deleteLocalProfile(pid);
-      };
-    });
-    if (store.previousId && store.previousId !== store.activeId && findProfile(store, store.previousId)) {
-      var prev = findProfile(store, store.previousId);
-      prevBtn.textContent = 'Apply previous: ' + (prev.name || 'Profile');
-      prevBtn.classList.remove('hidden');
-    } else {
-      prevBtn.classList.add('hidden');
-    }
-  }
-
-  function setUploadMsg(text, kind) {
-    var msg = document.getElementById('upload-msg');
-    msg.textContent = text;
-    if (kind === 'ok') msg.className = 'text-sm text-green-400';
-    else if (kind === 'err') msg.className = 'text-sm text-red-400';
-    else msg.className = 'text-sm text-zinc-400';
-  }
-
-  function uploadToDevice(jsonText, opts) {
+  function getJson() { return editor.getValue(); }
+  function fetchQ(url, opts) {
     opts = opts || {};
-    var minified;
-    try {
-      minified = minifyJson(jsonText);
-    } catch (e) {
-      setUploadMsg('Invalid JSON.', 'err');
-      return Promise.reject(e);
+    function go() {
+      if (ab) ab.abort();
+      ab = new AbortController();
+      var t = setTimeout(function () { ab.abort(); }, 12000);
+      var init = { cache: 'no-store', signal: ab.signal };
+      if (opts.method) init.method = opts.method;
+      if (opts.body != null) init.body = opts.body;
+      if (opts.headers) init.headers = opts.headers;
+      return fetch(url, init).finally(function () { clearTimeout(t); ab = null; });
     }
-    if (!opts.quiet) setUploadMsg('Uploading…', 'info');
-    return fetch('/api/profile', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: minified
-    })
-      .then(function (r) {
-        if (!r.ok) throw new Error('upload');
-        tryParseProfile(minified);
-        if (!opts.skipEditorBeautify) {
-          document.getElementById('profile-json').value = beautifyJson(minified);
-          tryParseProfile(document.getElementById('profile-json').value);
-        }
-        syncActiveLocalFromEditor(minified);
-        if (!opts.quiet) setUploadMsg('Applied and saved.', 'ok');
-        return pollStatus();
-      })
-      .catch(function () {
-        if (!opts.quiet) setUploadMsg('Upload failed (invalid JSON or SPIFFS error).', 'err');
-        throw new Error('upload');
-      });
+    var p = q.then(go, go);
+    q = p.catch(function () {});
+    return p;
   }
-
-  function syncActiveLocalFromEditor(minified) {
-    var store = loadStore();
-    if (!store.activeId) return;
-    var p = findProfile(store, store.activeId);
-    if (p) {
-      p.json = minified;
-      p.updatedAt = Date.now();
-      saveStore(store);
-    }
+  function setToggle(on) {
+    var b = $('btn-toggle');
+    b.textContent = on ? 'Macros ON' : 'Macros OFF';
+    b.className = on
+      ? 'px-4 py-2 rounded-md text-sm font-medium text-white bg-green-600 hover:bg-green-500'
+      : 'px-4 py-2 rounded-md text-sm font-medium text-white bg-zinc-600 hover:bg-zinc-500';
+    var s = $('v-status');
+    s.textContent = on ? 'Macros enabled' : 'Macros disabled';
+    s.className = on ? 'text-green-400 font-medium' : 'text-red-400 font-medium';
   }
-
-  function deleteLocalProfile(id) {
-    var store = loadStore();
-    var entry = findProfile(store, id);
-    if (!entry) return;
-    if (!window.confirm('Remove "' + (entry.name || 'Profile') + '" from browser storage?')) return;
-    store.profiles = store.profiles.filter(function (p) {
-      return p.id !== id;
-    });
-    if (store.activeId === id) store.activeId = null;
-    if (store.previousId === id) store.previousId = null;
-    saveStore(store);
-    renderLocalProfiles();
-    setUploadMsg('Removed from browser.', 'info');
+  function applyStatus(j) {
+    $('v-profile').textContent = j.profile || '—';
+    $('v-gun').textContent = j.activeWeaponName || '—';
+    $('v-script').textContent = j.activeScriptName || '—';
+    setToggle(!!j.macrosOn);
   }
-
-  function applyLocalProfile(id) {
-    var store = loadStore();
-    var entry = findProfile(store, id);
-    if (!entry) return;
-    if (store.activeId && store.activeId !== id) {
-      store.previousId = store.activeId;
-    }
-    store.activeId = id;
-    saveStore(store);
-    renderLocalProfiles();
-    setEditorJson(entry.json, true);
-    uploadToDevice(entry.json, { quiet: false }).catch(function () {});
+  function setConn(ok, txt) {
+    $('v-conn').textContent = txt;
+    $('v-conn').className = ok ? 'text-xs text-green-400 pt-1' : 'text-xs text-amber-400 pt-1';
   }
-
-  function saveEditorToLocal() {
-    var raw = document.getElementById('profile-json').value;
-    var parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (e) {
-      alert('Fix JSON syntax before saving to browser.');
-      return;
-    }
-    var defaultName = guessNameFromJson(parsed, null);
-    var name = window.prompt('Name for this browser profile:', defaultName);
-    if (name == null || !String(name).trim()) return;
-    name = String(name).trim();
-    var store = loadStore();
-    var existing = null;
-    store.profiles.forEach(function (p) {
-      if (p.name === name) existing = p;
-    });
-    var jsonStored = minifyJson(raw);
-    if (existing) {
-      if (!window.confirm('Replace saved profile "' + name + '"?')) return;
-      existing.json = jsonStored;
-      existing.updatedAt = Date.now();
-    } else {
-      if (store.profiles.length >= MAX_LOCAL_PROFILES) {
-        alert('Maximum ' + MAX_LOCAL_PROFILES + ' browser profiles. Delete one by long-press or remove from devtools.');
-        return;
-      }
-      store.profiles.push({ id: newId(), name: name, json: jsonStored, updatedAt: Date.now() });
-    }
-    saveStore(store);
-    renderLocalProfiles();
-    setUploadMsg('Saved to browser: ' + name, 'ok');
+  function setMsg(txt, ok) {
+    $('msg').textContent = txt || '';
+    $('msg').className = ok ? 'text-xs text-green-400' : (txt ? 'text-xs text-amber-400' : 'text-xs text-zinc-500');
   }
-
-  function downloadEditorJson() {
-    var raw = document.getElementById('profile-json').value;
-    var pretty;
-    var filename = 'profile.json';
-    try {
-      var parsed = JSON.parse(raw);
-      pretty = beautifyJson(raw);
-      filename = guessNameFromJson(parsed, 'profile') + '.json';
-    } catch (e) {
-      alert('Invalid JSON — cannot download.');
-      return;
-    }
-    var blob = new Blob([pretty], { type: 'application/json' });
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = filename.replace(/[^\w.\-]+/g, '_');
-    a.click();
-    URL.revokeObjectURL(a.href);
+  function refresh() {
+    setConn(false, 'Loading…');
+    return fetchQ('/api/ping')
+      .then(function (r) { if (!r.ok) throw 0; return fetchQ('/api/status'); })
+      .then(function (r) { if (!r.ok) throw 0; return r.json(); })
+      .then(function (j) { applyStatus(j); setConn(true, 'Connected'); })
+      .catch(function () { setConn(false, 'Offline — use Reload'); });
   }
-
-  function importJsonFile(file) {
-    if (!file) return;
-    var reader = new FileReader();
-    reader.onload = function () {
-      var text = reader.result;
-      try {
-        JSON.parse(text);
-      } catch (e) {
-        alert('Invalid JSON file.');
-        return;
-      }
-      setEditorJson(text, true);
-      var parsed = JSON.parse(text);
-      var name = window.prompt('Save imported file to browser profiles?', guessNameFromJson(parsed, file.name));
-      if (name != null && String(name).trim()) {
-        var store = loadStore();
-        var jsonStored = minifyJson(text);
-        var existing = null;
-        store.profiles.forEach(function (p) {
-          if (p.name === name.trim()) existing = p;
-        });
-        if (existing) {
-          existing.json = jsonStored;
-          existing.updatedAt = Date.now();
-        } else if (store.profiles.length < MAX_LOCAL_PROFILES) {
-          store.profiles.push({
-            id: newId(),
-            name: String(name).trim(),
-            json: jsonStored,
-            updatedAt: Date.now()
-          });
-        }
-        saveStore(store);
-        renderLocalProfiles();
-      }
-      setUploadMsg('Imported into editor.', 'ok');
-    };
-    reader.readAsText(file);
-  }
-
-  var httpBusy = false;
-
-  function pollStatus() {
-    if (httpBusy) {
-      return Promise.resolve();
-    }
-    httpBusy = true;
-    return fetch('/api/status', { cache: 'no-store' })
-      .then(function (r) {
-        if (!r.ok) throw new Error('status');
-        return r.json();
-      })
-      .then(function (j) {
-        renderStatus(j);
-      })
-      .catch(function () {})
-      .finally(function () {
-        httpBusy = false;
-      });
-  }
-
   function loadProfile() {
-    if (httpBusy) {
-      return Promise.resolve();
-    }
-    httpBusy = true;
-    return fetch('/api/profile')
-      .then(function (r) {
-        if (!r.ok) throw new Error('profile');
-        return r.text();
-      })
-      .then(function (txt) {
-        setEditorJson(txt, true);
-        if (state.status) renderStatus(state.status);
-      })
-      .catch(function () {
-        document.getElementById('weapon-comment').textContent = 'Could not load profile.json from device.';
-      })
-      .finally(function () {
-        httpBusy = false;
-      });
+    return fetchQ('/api/profile')
+      .then(function (r) { if (!r.ok) throw 0; return r.text(); })
+      .then(setJson)
+      .catch(function () { setMsg('Could not load profile JSON.', false); });
   }
-
-  function postAction(url) {
-    return fetch(url, { method: 'POST' })
-      .then(function (r) {
-        if (!r.ok) throw new Error('action');
-        return r.json().catch(function () {
-          return {};
-        });
-      })
-      .then(function () {
-        return pollStatus();
-      });
+  function boot() {
+    return refresh().then(loadProfile).then(function () { setMsg('', false); });
   }
-
-  document.getElementById('btn-next').onclick = function () {
-    postAction('/api/next-script').catch(function () {
-      alert('Request failed');
-    });
+  $('btn-toggle').onclick = function () {
+    fetchQ('/api/toggle-macros', { method: 'POST' })
+      .then(function (r) { if (!r.ok) throw 0; return refresh(); })
+      .catch(function () { setMsg('Toggle failed.', false); });
   };
-  document.getElementById('btn-toggle').onclick = function () {
-    postAction('/api/toggle-macros').catch(function () {
-      alert('Request failed');
-    });
+  $('btn-reload').onclick = boot;
+  $('btn-upload').onclick = function () {
+    var t = getJson();
+    try { JSON.parse(t); } catch (e) { setMsg('Invalid JSON.', false); return; }
+    setMsg('Uploading…', false);
+    fetchQ('/api/profile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: t })
+      .then(function (r) { if (!r.ok) throw 0; return boot(); })
+      .then(function () { setMsg('Uploaded.', true); })
+      .catch(function () { setMsg('Upload failed.', false); });
   };
-  document.getElementById('btn-refresh').onclick = pollStatus;
-  document.getElementById('btn-fetch').onclick = loadProfile;
-
-  document.getElementById('upload-form').onsubmit = function (e) {
-    e.preventDefault();
-    uploadToDevice(document.getElementById('profile-json').value).catch(function () {});
-  };
-
-  document.getElementById('btn-save-local').onclick = saveEditorToLocal;
-  document.getElementById('btn-download').onclick = downloadEditorJson;
-  document.getElementById('btn-import-file').onclick = function () {
-    document.getElementById('import-file').click();
-  };
-  document.getElementById('import-file').onchange = function (ev) {
-    var f = ev.target.files && ev.target.files[0];
-    importJsonFile(f);
-    ev.target.value = '';
-  };
-  document.getElementById('btn-apply-previous').onclick = function () {
-    var store = loadStore();
-    if (store.previousId) applyLocalProfile(store.previousId);
-  };
-
-  renderLocalProfiles();
-
-  /* HTTP polling only — one request at a time (low concurrent TCP use on ESP). */
-  function refreshUi() {
-    return pollStatus().then(function () {
-      return new Promise(function (resolve) {
-        setTimeout(resolve, 400);
-      });
-    }).then(function () {
-      return loadProfile();
-    });
-  }
-
-  setInterval(function () {
-    if (!document.hidden) {
-      pollStatus();
-    }
-  }, 8000);
-
-  document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) {
-      pollStatus();
-    }
-  });
-
-  refreshUi();
+  setTimeout(boot, 400);
 })();
-  </script>
+</script>
 </body>
 </html>

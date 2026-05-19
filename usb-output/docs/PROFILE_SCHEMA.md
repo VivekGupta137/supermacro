@@ -62,6 +62,7 @@ Profile JSON  →  parse at boot / upload  →  group_sequence in RAM  →  esp_
 | Schema versions accepted | `1`, `2`, `3` |
 | Groups / modes per active bank | **10** (`MAX_KEY_MODIFICATION_SEQUENCE`) |
 | Steps per group / mode | **100** (`MAX_KEY_MODIFICATION_EVENT`) |
+| `n` vs `steps` | **`n` must be ≤ `steps.length`** (strict: if `n` > step count, upload/parse fails) |
 | Weapon / script banks (v2/v3) | **4** (`MAX_MACRO_SCRIPTS`) |
 | Profile file size | Menuconfig `CONFIG_MACRO_PROFILE_MAX_SIZE` |
 
@@ -234,11 +235,24 @@ All layers **multiply**. Example: `800/800 × 1.0 × 0.85` (ADS `modeScale`) = *
 | `m` | number | HID modifier bitmask. |
 | `k` | array | Up to **6** USB keycodes; **all** must be present (chord). |
 
+### HID modifier bitmask (`m`)
+
+| Bit | Hex | Name |
+|-----|-----|------|
+| 0 | `0x01` | Left Ctrl |
+| 1 | `0x02` | **Left Shift** (Rust crouch on default bindings) |
+| 2 | `0x04` | Left Alt |
+| 3 | `0x08` | Left GUI |
+| 4 | `0x10` | Right Ctrl |
+| 5 | `0x20` | Right Shift |
+| 6 | `0x40` | Right Alt |
+| 7 | `0x80` | Right GUI |
+
 ---
 
 ## Triggers and matching
 
-Triggers use the same `{ "mouse": { ... } }` or `{ "kbd": { ... } }` wrapper as steps.
+Triggers use the same `{ "mouse": { ... } }` and/or `{ "kbd": { ... } }` wrapper as steps. **Both** may appear in one `press` object (v3): every part must be held to start and keep the macro running.
 
 ### Rising edge (`press`)
 
@@ -258,7 +272,25 @@ The macro **starts once** when the chord becomes newly true, not every USB poll 
 
 ### v3 `modeSet` (peer stop)
 
-Modes in the same weapon share a **`modeSet`** id (default: weapon index + 1). When one mode **starts**, any **other running** mode in the same set is **stopped**. When you release a chord, that mode stops on the next mouse report sync.
+Modes in the same weapon share a **`modeSet`** id (default: weapon index + 1). When one mode **starts**, any **other running** mode in the same set is **stopped**. When you release a chord, that mode stops on the next mouse or keyboard report sync.
+
+### Combined mouse + keyboard `press` (v3)
+
+Use when a mode should only run with **both** a mouse chord and a modifier/key held (e.g. crouch + fire):
+
+```json
+"pressMode": "exact",
+"press": { "mouse": { "b": 1 }, "kbd": { "m": 2 } }
+```
+
+| Example | `press` |
+|---------|---------|
+| Hipfire standing | `{ "mouse": { "b": 1 } }` + `"pressMode": "exact"` |
+| Hipfire crouch (LMB + LShift) | `{ "mouse": { "b": 1 }, "kbd": { "m": 2 } }` + `"exact"` |
+| ADS standing | `{ "mouse": { "b": 3 } }` |
+| ADS crouch | `{ "mouse": { "b": 3 }, "kbd": { "m": 2 } }` |
+
+The macro starts on the **rising edge** of the full condition (e.g. Shift pressed while LMB already down, or LMB pressed while Shift already down). Releasing **either** mouse buttons or the keyboard requirement stops the mode.
 
 ---
 

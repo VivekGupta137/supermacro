@@ -486,6 +486,49 @@ static bool fill_trigger(hid_transmit_t *t, const cJSON *obj)
     return true;
 }
 
+/** Mode `press` may include both `mouse` and `kbd` (e.g. LMB + Left Shift). */
+static bool fill_press_condition(key_modification_sequence_t *seq, const cJSON *press_obj)
+{
+    seq->press_mouse_required = false;
+    seq->press_kbd_required = false;
+    memset(&seq->press_kbd, 0, sizeof(seq->press_kbd));
+    memset(&seq->event_press, 0, sizeof(seq->event_press));
+
+    if (!press_obj || cJSON_IsNull(press_obj)) {
+        return true;
+    }
+    if (!cJSON_IsObject(press_obj)) {
+        return false;
+    }
+    const cJSON *mouse = cJSON_GetObjectItem(press_obj, "mouse");
+    const cJSON *kbd = cJSON_GetObjectItem(press_obj, "kbd");
+    if (mouse) {
+        hid_transmit_t tmp;
+        if (!fill_mouse_event(&tmp, mouse)) {
+            return false;
+        }
+        seq->press_mouse_required = true;
+        seq->event_press.header = HEADER_HID_MOUSE;
+        seq->event_press.event.mouse = tmp.event.mouse;
+    }
+    if (kbd) {
+        hid_transmit_t tmp;
+        if (!fill_keyboard_event(&tmp, kbd)) {
+            return false;
+        }
+        seq->press_kbd_required = true;
+        seq->press_kbd = tmp.event.keyboard;
+        if (!seq->press_mouse_required) {
+            seq->event_press.header = HEADER_HID_KEYBOARD;
+            seq->event_press.event.keyboard = tmp.event.keyboard;
+        }
+    }
+    if (!seq->press_mouse_required && !seq->press_kbd_required) {
+        return false;
+    }
+    return true;
+}
+
 static float json_positive_scale(const cJSON *s)
 {
     if (s && cJSON_IsNumber(s) && s->valuedouble > 0.0) {
@@ -582,6 +625,7 @@ static bool parse_one_group(const cJSON *g, key_modification_sequence_t *seq, fl
             if (want > 0 && want <= nsteps) {
                 nsteps = want;
             } else if (want > nsteps || want < 0) {
+                ESP_LOGW(LOG_TITLE, "profile mode rejected: n=%d exceeds steps=%d", want, nsteps);
                 return false;
             }
         }
@@ -596,7 +640,7 @@ static bool parse_one_group(const cJSON *g, key_modification_sequence_t *seq, fl
     seq->mouse_scale = step_scale;
     const cJSON *loop = cJSON_GetObjectItem(g, "loop");
     seq->loop = cJSON_IsTrue(loop);
-    if (!fill_trigger(&seq->event_press, cJSON_GetObjectItem(g, "press"))) {
+    if (!fill_press_condition(seq, cJSON_GetObjectItem(g, "press"))) {
         return false;
     }
     if (!fill_trigger(&seq->event_release, cJSON_GetObjectItem(g, "release"))) {

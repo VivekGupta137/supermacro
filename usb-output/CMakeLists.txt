@@ -9,9 +9,13 @@ set(_sdkconfig "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig")
 if(EXISTS "${_sdkconfig}")
   file(READ "${_sdkconfig}" _sdkcontent)
   foreach(_pair
-      "CONFIG_LWIP_MAX_SOCKETS=20"
+      "CONFIG_LWIP_MAX_SOCKETS=32"
       "CONFIG_LWIP_MAX_ACTIVE_TCP=16"
-      "CONFIG_LWIP_PBUF_POOL_SIZE=24")
+      "CONFIG_LWIP_PBUF_POOL_SIZE=48"
+      "CONFIG_LWIP_MEM_SIZE=32768"
+      "CONFIG_LWIP_SO_REUSE=y"
+      "CONFIG_LWIP_TCP_MSL=3000"
+      "CONFIG_LWIP_TCP_FIN_WAIT_TIMEOUT=3000")
     string(REGEX REPLACE "([^=]+)=.*" "\\1" _key "${_pair}")
     string(REGEX REPLACE "[^=]+=(.*)" "\\1" _val "${_pair}")
     if(_sdkcontent MATCHES "${_key}=")
@@ -20,6 +24,7 @@ if(EXISTS "${_sdkconfig}")
       string(APPEND _sdkcontent "\n${_key}=${_val}\n")
     endif()
   endforeach()
+  string(REGEX REPLACE "CONFIG_HTTPD_WS_SUPPORT=y[^\n\r]*\n?" "# CONFIG_HTTPD_WS_SUPPORT is not set\n" _sdkcontent "${_sdkcontent}")
   file(WRITE "${_sdkconfig}" "${_sdkcontent}")
 endif()
 

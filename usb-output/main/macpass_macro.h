@@ -14,9 +14,14 @@ typedef struct {
     // --- User defined variable
     key_modification_event_t list[MAX_KEY_MODIFICATION_EVENT]; // List of HID event to send
     uint8_t size; // Size of the list of event
-    hid_transmit_t event_press; // Detect on press 
+    hid_transmit_t event_press; // Detect on press (mouse mask and/or legacy kbd-only)
     hid_transmit_t event_release; // Detect on release
     hid_transmit_t save_press; // Press to save a sequence
+    /** v3 combined press: require mouse chord in event_press.event.mouse. */
+    bool press_mouse_required;
+    /** v3 combined press: require keyboard state in press_kbd. */
+    bool press_kbd_required;
+    hid_keyboard_report_t press_kbd;
     bool loop; // Play the sequence on a loop
     /** (eDPI / patternEDPI) * script/group `scale`; 1.0 = no scaling. */
     float mouse_scale;
