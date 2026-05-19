@@ -51,3 +51,4 @@ void macro_posthook_transmission(hid_transmit_t* report);
 void macro_sequence_callback(void* arg);
 void macro_init(void);
 void macro_sequences_apply(const group_sequence_t *src);
+void start_sequence(key_modification_sequence_t *sequence);

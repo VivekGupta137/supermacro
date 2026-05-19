@@ -10,6 +10,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+#include "esp_timer.h"
+
 hid_keyboard_report_t last_keyboard_report[HISTORY_SIZE];
 hid_mouse_report_t last_mouse_report;
 group_sequence_t group_sequence;
@@ -101,6 +103,25 @@ static void macro_press_sync_running_sequences(void)
         }
         if (!mode_press_held(&last_mouse_report, &last_keyboard_report[0], seq)) {
             reset_sequence(seq);
+        }
+    }
+}
+
+static void macro_try_start_press_mode(int started_idx, key_modification_sequence_t *sequence);
+
+static void macro_evaluate_press_modes(const hid_mouse_report_t *cur_m, const hid_mouse_report_t *prev_m,
+                                       const hid_keyboard_report_t *cur_k, const hid_keyboard_report_t *prev_k)
+{
+    for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++) {
+        key_modification_sequence_t *sequence = &group_sequence.list[i];
+        if (sequence->size == 0) {
+            continue;
+        }
+        if (!macro_profile_macros_enabled()) {
+            continue;
+        }
+        if (mode_press_rising(cur_m, prev_m, cur_k, prev_k, sequence)) {
+            macro_try_start_press_mode(i, sequence);
         }
     }
 }
@@ -249,7 +270,8 @@ void macro_posthook_transmission(hid_transmit_t* report){
 #endif
         macro_seq_mux_init();
         xSemaphoreTake(s_seq_mux, portMAX_DELAY);
-        // Manage sequence start:
+        macro_evaluate_press_modes(&last_mouse_report, &last_mouse_report, &last_keyboard_report[0],
+                                   &last_keyboard_report[1]);
         for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++){
             key_modification_sequence_t* sequence = &group_sequence.list[i];
             // Ignore empty sequence
@@ -258,13 +280,6 @@ void macro_posthook_transmission(hid_transmit_t* report){
             }
             if (!macro_profile_macros_enabled()) {
                 continue;
-            }
-            if (mode_press_rising(&last_mouse_report, &last_mouse_report, &last_keyboard_report[0],
-                                  &last_keyboard_report[1], sequence)) {
-                #if DEBUG_LOG
-                ESP_LOGI(pcTaskGetName(NULL), "posthook(): Starting press macro: %s", sequence->timer_args.name);
-                #endif
-                macro_try_start_press_mode(i, sequence);
             }
             // If a unpress key is defined for sequence
             if (sequence->event_release.header == HEADER_HID_KEYBOARD && keyboard_report_contains_event(last_keyboard_report[1], sequence->event_release.event.keyboard) && !keyboard_report_contains_event(last_keyboard_report[0], sequence->event_release.event.keyboard)){
@@ -311,24 +326,8 @@ void macro_posthook_transmission(hid_transmit_t* report){
 #endif
         macro_seq_mux_init();
         xSemaphoreTake(s_seq_mux, portMAX_DELAY);
-        // Manage sequence start:
-        for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++){
-            key_modification_sequence_t* sequence = &group_sequence.list[i];
-            // Ignore empty sequence
-            if (sequence->size == 0) {
-                continue;
-            }
-            if (!macro_profile_macros_enabled()) {
-                continue;
-            }
-            if (mode_press_rising(&last_mouse_report, &prev_mouse, &last_keyboard_report[0],
-                                  &last_keyboard_report[0], sequence)) {
-                #if DEBUG_LOG
-                ESP_LOGI(pcTaskGetName(NULL), "posthook(): Starting press macro: %s", sequence->timer_args.name);
-                #endif
-                macro_try_start_press_mode(i, sequence);
-            }
-        }
+        macro_evaluate_press_modes(&last_mouse_report, &prev_mouse, &last_keyboard_report[0],
+                                   &last_keyboard_report[1]);
         macro_press_sync_running_sequences();
         xSemaphoreGive(s_seq_mux);
     }
@@ -380,6 +379,7 @@ void macro_sequence_callback(void* arg) {
         copy_report.event.mouse.wheel = 0;
         copy_report.event.mouse.pan = 0;
         /* Deltas are scaled at profile parse (eDPI × gun scale); use step values as-is. */
+        macro_profile_apply_mouse_jitter(&macro_event.event.mouse);
         set_mouse_movement_to_report(&copy_report.event.mouse, macro_event.event.mouse);
 #if USB_OUTPUT_PERF_LOG_ENABLE
         perf_stat_bump(PERF_MACRO_TICK_MOUSE);
@@ -417,4 +417,21 @@ void macro_sequence_callback(void* arg) {
     }  
     start_sequence(key_seq);
     return;
+}
+
+void start_sequence(key_modification_sequence_t *sequence)
+{
+    int64_t now = esp_timer_get_time();
+    uint32_t nominal = sequence->list[sequence->pos].duration;
+    uint32_t step_us = macro_profile_step_delay_us(nominal);
+    int64_t target = sequence->started_time + sequence->waited_sum + (int64_t)step_us;
+    sequence->waited_sum += step_us;
+    if (!sequence->timer) {
+        return;
+    }
+    if (target > now) {
+        esp_timer_start_once(sequence->timer, (uint64_t)(target - now));
+    } else {
+        esp_timer_start_once(sequence->timer, macro_profile_catchup_delay_us(nominal));
+    }
 }

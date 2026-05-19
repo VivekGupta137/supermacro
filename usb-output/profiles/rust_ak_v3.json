@@ -3,6 +3,12 @@
   "name": "rust-ak-v3",
   "eDPI": 800,
   "patternEDPI": 800,
+  "humanize": {
+    "timingPct": 5,
+    "jitterUs": [800, 2500],
+    "mouse": 0,
+    "catchupMinMs": 75
+  },
   "macrosOn": true,
   "activeWeapon": 0,
   "nextWeapon": { "mouse": { "b": 4 } },

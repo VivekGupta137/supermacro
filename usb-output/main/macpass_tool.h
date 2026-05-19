@@ -109,11 +109,33 @@ static inline void remove_keycode(hid_keyboard_report_t* report, const uint8_t k
     }
 };
 
+/** Boot keyboard usage 0xE0..0xE7 → modifier bit (when host sends Shift as a key slot). */
+static inline bool keyboard_modifier_bit_from_usage(uint8_t usage, uint8_t *bit_out)
+{
+    if (usage < 0xE0 || usage > 0xE7) {
+        return false;
+    }
+    *bit_out = (uint8_t)(1u << (usage - 0xE0));
+    return true;
+}
+
+static inline uint8_t keyboard_modifier_mask_from_report(const hid_keyboard_report_t report)
+{
+    uint8_t mask = report.modifier;
+    for (int i = 0; i < 6; i++) {
+        uint8_t bit = 0;
+        if (report.keycode[i] != 0 && keyboard_modifier_bit_from_usage(report.keycode[i], &bit)) {
+            mask |= bit;
+        }
+    }
+    return mask;
+}
+
 static inline bool keyboard_report_contains_event(const hid_keyboard_report_t report, const hid_keyboard_report_t expected){
-    // Check modifier keys
+    // Check modifier keys (modifier byte and/or 0xE0..0xE7 in key slots)
     if (expected.modifier != 0) {
-        // All bits set in expected must also be set in report
-        if ((report.modifier & expected.modifier) != expected.modifier) {
+        const uint8_t live = keyboard_modifier_mask_from_report(report);
+        if ((live & expected.modifier) != expected.modifier) {
             return false;
         }
     }
@@ -253,23 +275,6 @@ static inline void reset_sequence(key_modification_sequence_t* sequence){
     sequence->started_time = esp_timer_get_time();
     sequence->waited_sum = 0;
     sequence->is_recording = false;
-}
-
-static inline void start_sequence(key_modification_sequence_t* sequence){
-    // Compute next time target for next key sequence.
-    int64_t now = esp_timer_get_time();
-    int64_t target = sequence->started_time + sequence->waited_sum + sequence->list[sequence->pos].duration;
-    // Add waiting time to sum history.
-    sequence->waited_sum += sequence->list[sequence->pos].duration;
-    // Verify that the target has not been missed.
-    if (!sequence->timer) {
-        return;
-    }
-    if (target > now) {
-        esp_timer_start_once(sequence->timer, target - now);
-    } else {
-        esp_timer_start_once(sequence->timer, 1000);
-    }
 }
 
 static inline void add_keyboard_record(key_modification_sequence_t* sequence, const hid_transmit_t report){

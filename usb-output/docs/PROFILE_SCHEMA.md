@@ -111,9 +111,31 @@ Each step is one timed HID output.
 | `mouse` | object | one of | Relative mouse report for this tick. |
 | `kbd` | object | one of | Keyboard report for this tick. |
 
-**Rejected fields** (load fails if present on any step): `mouseTo`, `interp`, `segments`, `humanize`.
+**Rejected fields** (load fails if present on any step): `mouseTo`, `interp`, `segments`, `humanize` (use profile-level `humanize` instead).
 
 **Timing tip:** For full-auto recoil, set `us` ≈ `60_000_000 / RPM` (e.g. 600 RPM → `100000` µs per bullet).
+
+### Profile `humanize` (optional, root object)
+
+Makes macro timing less perfectly periodic and avoids **1 ms catch-up bursts** when the device falls slightly behind. Applied on each loop iteration (new random jitter every shot).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `timingPct` | number | 0–25. Uniform ±% jitter on each step’s `us` (e.g. `5` → ±5% on `133000` µs). |
+| `jitterUs` | `[min, max]` | Extra uniform random delay added each step (µs). |
+| `mouse` | number | 0–3. Optional ±N counts random noise on macro `mouse.x` / `mouse.y` per tick. |
+| `catchupMinMs` | number | When a tick is late, minimum wait before the next tick (default **75** ms if `humanize` is present). Replaces the old fixed **1 ms** catch-up. |
+
+Without `humanize`, firmware still uses a softer default catch-up (~25% of nominal `us`, at least 10 ms) instead of 1 ms.
+
+```json
+"humanize": {
+  "timingPct": 5,
+  "jitterUs": [800, 2500],
+  "mouse": 0,
+  "catchupMinMs": 75
+}
+```
 
 **Empty `steps`:** If omitted or `[]`, firmware inserts one neutral keyboard step (group still occupies a slot).
 
@@ -287,6 +309,8 @@ Use when a mode should only run with **both** a mouse chord and a modifier/key h
 |---------|---------|
 | Hipfire standing | `{ "mouse": { "b": 1 } }` + `"pressMode": "exact"` |
 | Hipfire crouch (LMB + LShift) | `{ "mouse": { "b": 1 }, "kbd": { "m": 2 } }` + `"exact"` |
+
+**Keyboard path:** Combined `press` needs **keyboard reports on SPI** from **usb-input** (crouch modifier must pass through the input ESP, not only a keyboard plugged into the PC). Firmware accepts `m:2` in the modifier byte **or** boot usage `0xE1` (Left Shift) in a key slot.
 | ADS standing | `{ "mouse": { "b": 3 } }` |
 | ADS crouch | `{ "mouse": { "b": 3 }, "kbd": { "m": 2 } }` |
 

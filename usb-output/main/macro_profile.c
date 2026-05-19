@@ -7,7 +7,99 @@
 #include <string.h>
 
 #include "esp_idf_version.h"
+#include "esp_random.h"
 #include "macro_ws.h"
+
+typedef struct {
+    bool enabled;
+    uint8_t timing_pct;
+    uint16_t jitter_min_us;
+    uint16_t jitter_max_us;
+    uint8_t mouse_jitter;
+    uint32_t catchup_min_us;
+} macro_humanize_cfg_t;
+
+static macro_humanize_cfg_t s_humanize;
+
+static void humanize_set_defaults(void)
+{
+    memset(&s_humanize, 0, sizeof(s_humanize));
+}
+
+uint32_t macro_profile_step_delay_us(uint32_t nominal_us)
+{
+    if (nominal_us < 1000) {
+        nominal_us = 1000;
+    }
+    if (!s_humanize.enabled) {
+        return nominal_us;
+    }
+    int32_t jitter = 0;
+    if (s_humanize.timing_pct > 0) {
+        int32_t span = (int32_t)((nominal_us * (uint32_t)s_humanize.timing_pct) / 100u);
+        if (span > 0) {
+            jitter = (int32_t)(esp_random() % (uint32_t)(2 * span + 1)) - span;
+        }
+    }
+    if (s_humanize.jitter_max_us > s_humanize.jitter_min_us) {
+        uint32_t span = (uint32_t)s_humanize.jitter_max_us - s_humanize.jitter_min_us;
+        jitter += (int32_t)s_humanize.jitter_min_us + (int32_t)(esp_random() % (span + 1u));
+    } else if (s_humanize.jitter_max_us > 0) {
+        jitter += (int32_t)(esp_random() % ((uint32_t)s_humanize.jitter_max_us + 1u));
+    }
+    int64_t out = (int64_t)nominal_us + jitter;
+    if (out < 1000) {
+        out = 1000;
+    }
+    if (out > 60000000) {
+        out = 60000000;
+    }
+    return (uint32_t)out;
+}
+
+uint32_t macro_profile_catchup_delay_us(uint32_t nominal_us)
+{
+    if (nominal_us < 1000) {
+        nominal_us = 1000;
+    }
+    uint32_t delay;
+    if (s_humanize.enabled && s_humanize.catchup_min_us > 0) {
+        delay = s_humanize.catchup_min_us;
+    } else {
+        delay = nominal_us / 4u;
+        if (delay < 10000) {
+            delay = 10000;
+        }
+    }
+    if (delay > nominal_us) {
+        delay = nominal_us;
+    }
+    return delay;
+}
+
+void macro_profile_apply_mouse_jitter(hid_mouse_report_t *m)
+{
+    if (!s_humanize.enabled || s_humanize.mouse_jitter == 0 || m == NULL) {
+        return;
+    }
+    uint32_t j = s_humanize.mouse_jitter;
+    int dx = (int)(esp_random() % (2u * j + 1u)) - (int)j;
+    int dy = (int)(esp_random() % (2u * j + 1u)) - (int)j;
+    int nx = (int)m->x + dx;
+    int ny = (int)m->y + dy;
+    if (nx > 127) {
+        nx = 127;
+    } else if (nx < -128) {
+        nx = -128;
+    }
+    if (ny > 127) {
+        ny = 127;
+    } else if (ny < -128) {
+        ny = -128;
+    }
+    m->x = (int8_t)nx;
+    m->y = (int8_t)ny;
+}
 
 #if CONFIG_MACRO_WEB_UI
 #include <inttypes.h>
@@ -273,11 +365,69 @@ void macro_profile_try_action_hotkeys(const hid_keyboard_report_t *prev_k,
     }
 }
 
+#if CONFIG_MACRO_WEB_UI
+static void parse_humanize_root(const cJSON *root)
+{
+    humanize_set_defaults();
+    const cJSON *h = cJSON_GetObjectItem(root, "humanize");
+    if (!h || !cJSON_IsObject(h)) {
+        return;
+    }
+    s_humanize.enabled = true;
+    const cJSON *pct = cJSON_GetObjectItem(h, "timingPct");
+    if (pct && cJSON_IsNumber(pct)) {
+        int p = (int)pct->valuedouble;
+        if (p < 0) {
+            p = 0;
+        } else if (p > 25) {
+            p = 25;
+        }
+        s_humanize.timing_pct = (uint8_t)p;
+    }
+    const cJSON *ju = cJSON_GetObjectItem(h, "jitterUs");
+    if (ju && cJSON_IsArray(ju) && cJSON_GetArraySize(ju) >= 2) {
+        const cJSON *a = cJSON_GetArrayItem(ju, 0);
+        const cJSON *b = cJSON_GetArrayItem(ju, 1);
+        if (a && b && cJSON_IsNumber(a) && cJSON_IsNumber(b)) {
+            s_humanize.jitter_min_us = (uint16_t)a->valuedouble;
+            s_humanize.jitter_max_us = (uint16_t)b->valuedouble;
+            if (s_humanize.jitter_max_us < s_humanize.jitter_min_us) {
+                uint16_t tmp = s_humanize.jitter_min_us;
+                s_humanize.jitter_min_us = s_humanize.jitter_max_us;
+                s_humanize.jitter_max_us = tmp;
+            }
+        }
+    }
+    const cJSON *mouse = cJSON_GetObjectItem(h, "mouse");
+    if (mouse && cJSON_IsNumber(mouse)) {
+        int mv = (int)mouse->valuedouble;
+        if (mv < 0) {
+            mv = 0;
+        } else if (mv > 3) {
+            mv = 3;
+        }
+        s_humanize.mouse_jitter = (uint8_t)mv;
+    }
+    const cJSON *cm = cJSON_GetObjectItem(h, "catchupMinMs");
+    if (cm && cJSON_IsNumber(cm)) {
+        s_humanize.catchup_min_us = (uint32_t)(cm->valuedouble * 1000.0);
+        if (s_humanize.catchup_min_us < 5000) {
+            s_humanize.catchup_min_us = 5000;
+        }
+    } else {
+        s_humanize.catchup_min_us = 75000;
+    }
+}
+#endif
+
 static void profile_runtime_reset_parsed(void)
 {
+    humanize_set_defaults();
+#if CONFIG_MACRO_WEB_UI
     memset(s_script_banks, 0, sizeof(s_script_banks));
     s_script_count = 0;
     s_active_script = 0;
+#endif
     s_additive_mouse = false;
     s_edpi = 0.f;
     s_pattern_edpi = 800.f;
@@ -728,6 +878,7 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
     profile_runtime_reset_parsed();
     s_schema_version = vn;
     parse_profile_edpi(root);
+    parse_humanize_root(root);
 
     const cJSON *additive = cJSON_GetObjectItem(root, "additiveMouse");
     s_additive_mouse = !cJSON_IsFalse(additive);
@@ -888,6 +1039,7 @@ static bool load_profile_from_flash(void)
 
 void macro_profile_init(const group_sequence_t *fallback)
 {
+    humanize_set_defaults();
     memset(&group_sequence, 0, sizeof(group_sequence));
     strncpy(s_profile_name, "built-in", sizeof(s_profile_name) - 1);
     s_profile_name[sizeof(s_profile_name) - 1] = '\0';
