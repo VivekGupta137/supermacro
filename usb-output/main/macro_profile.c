@@ -17,6 +17,7 @@ typedef struct {
     uint16_t jitter_max_us;
     uint8_t mouse_jitter;
     uint32_t catchup_min_us;
+    uint32_t drip_interval_us;
 } macro_humanize_cfg_t;
 
 static macro_humanize_cfg_t s_humanize;
@@ -24,6 +25,17 @@ static macro_humanize_cfg_t s_humanize;
 static void humanize_set_defaults(void)
 {
     memset(&s_humanize, 0, sizeof(s_humanize));
+    s_humanize.drip_interval_us = HID_MOUSE_DRIP_INTERVAL_US;
+}
+
+uint32_t macro_profile_mouse_drip_interval_us(void)
+{
+    return s_humanize.drip_interval_us;
+}
+
+void macro_profile_sync_mouse_drip(void)
+{
+    hid_mouse_drip_apply_interval();
 }
 
 uint32_t macro_profile_step_delay_us(uint32_t nominal_us)
@@ -44,6 +56,8 @@ uint32_t macro_profile_step_delay_us(uint32_t nominal_us)
     if (s_humanize.jitter_max_us > s_humanize.jitter_min_us) {
         uint32_t span = (uint32_t)s_humanize.jitter_max_us - s_humanize.jitter_min_us;
         jitter += (int32_t)s_humanize.jitter_min_us + (int32_t)(esp_random() % (span + 1u));
+    } else if (s_humanize.jitter_min_us > 0 && s_humanize.jitter_max_us == s_humanize.jitter_min_us) {
+        jitter += (int32_t)s_humanize.jitter_min_us;
     } else if (s_humanize.jitter_max_us > 0) {
         jitter += (int32_t)(esp_random() % ((uint32_t)s_humanize.jitter_max_us + 1u));
     }
@@ -414,9 +428,37 @@ static void parse_humanize_root(const cJSON *root)
         if (s_humanize.catchup_min_us < 5000) {
             s_humanize.catchup_min_us = 5000;
         }
-    } else {
+    } else if (s_humanize.timing_pct > 0 || s_humanize.jitter_max_us > 0) {
+        /* Default 75 ms catch-up only when bullet timing jitter is configured. */
         s_humanize.catchup_min_us = 75000;
     }
+    const cJSON *drip_ms = cJSON_GetObjectItem(h, "dripMs");
+    const cJSON *drip_hz = cJSON_GetObjectItem(h, "dripHz");
+    if (drip_ms && cJSON_IsNumber(drip_ms)) {
+        int ms = (int)drip_ms->valuedouble;
+        if (ms < 0) {
+            ms = 0;
+        } else if (ms > 50) {
+            ms = 50;
+        }
+        s_humanize.drip_interval_us = (uint32_t)ms * 1000u;
+    } else if (drip_hz && cJSON_IsNumber(drip_hz)) {
+        int hz = (int)drip_hz->valuedouble;
+        if (hz <= 0) {
+            s_humanize.drip_interval_us = 0;
+        } else {
+            if (hz > 2000) {
+                hz = 2000;
+            }
+            s_humanize.drip_interval_us = 1000000u / (uint32_t)hz;
+            if (s_humanize.drip_interval_us < 1000u) {
+                s_humanize.drip_interval_us = 1000u;
+            }
+        }
+    } else {
+        s_humanize.drip_interval_us = HID_MOUSE_DRIP_INTERVAL_US;
+    }
+    macro_profile_sync_mouse_drip();
 }
 #endif
 

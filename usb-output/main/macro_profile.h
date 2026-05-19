@@ -32,6 +32,10 @@ uint32_t macro_profile_step_delay_us(uint32_t nominal_us);
 uint32_t macro_profile_catchup_delay_us(uint32_t nominal_us);
 /** Optional ±1..N pixel noise on macro mouse deltas when enabled in profile. */
 void macro_profile_apply_mouse_jitter(hid_mouse_report_t *m);
+/** USB spread interval between macro drip slices (µs). 0 = one report per bullet tick (no spread). */
+uint32_t macro_profile_mouse_drip_interval_us(void);
+/** Apply profile `humanize` drip interval to the HID drip timer (after profile load). */
+void macro_profile_sync_mouse_drip(void);
 
 #if CONFIG_MACRO_WEB_UI
 void macro_profile_try_action_hotkeys(const hid_keyboard_report_t *prev_k,

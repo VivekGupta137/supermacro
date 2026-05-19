@@ -26,6 +26,9 @@
 // Enable debug log, (it impacts performance)
 #define DEBUG_LOG 0
 
+/** Spread macro mouse deltas across USB reports (~125 Hz) between bullet ticks. */
+#define HID_MOUSE_DRIP_INTERVAL_US 8000
+
 // Throttled SPI/macro/USB stats (one line per second when enabled). Off by default — UART is slow.
 #define USB_OUTPUT_PERF_LOG_ENABLE 1
 #define USB_OUTPUT_PERF_LOG_WINDOW_MS 1000

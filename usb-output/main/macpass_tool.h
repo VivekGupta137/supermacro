@@ -275,6 +275,7 @@ static inline void reset_sequence(key_modification_sequence_t* sequence){
     sequence->started_time = esp_timer_get_time();
     sequence->waited_sum = 0;
     sequence->is_recording = false;
+    macro_after_sequence_reset();
 }
 
 static inline void add_keyboard_record(key_modification_sequence_t* sequence, const hid_transmit_t report){

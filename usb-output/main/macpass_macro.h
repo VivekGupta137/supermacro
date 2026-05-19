@@ -45,6 +45,10 @@ typedef struct {
 } group_sequence_t;
 
 extern group_sequence_t group_sequence;
+extern hid_mouse_report_t last_mouse_report;
+
+/** Drop pending macro mouse spread when no mouse sequence is running. */
+void macro_after_sequence_reset(void);
 
 bool macro_prehook_transmission(hid_transmit_t* report);
 void macro_posthook_transmission(hid_transmit_t* report);
@@ -52,3 +56,5 @@ void macro_sequence_callback(void* arg);
 void macro_init(void);
 void macro_sequences_apply(const group_sequence_t *src);
 void start_sequence(key_modification_sequence_t *sequence);
+/** Schedule next tick after `step_us` (use the same value passed to hid_macro_feed_mouse_step). */
+void start_sequence_with_delay(key_modification_sequence_t *sequence, uint32_t step_us);

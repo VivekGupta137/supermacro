@@ -29,6 +29,37 @@ static bool sequence_is_running(const key_modification_sequence_t *seq)
     return seq->pos > 0 || sequence_timer_active(seq);
 }
 
+static bool macro_sequence_has_mouse_steps(const key_modification_sequence_t *seq)
+{
+    for (uint8_t i = 0; i < seq->size; i++) {
+        if (seq->list[i].event.header == HEADER_HID_MOUSE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool macro_any_mouse_sequence_running(void)
+{
+    for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++) {
+        const key_modification_sequence_t *seq = &group_sequence.list[i];
+        if (seq->size == 0 || !macro_sequence_has_mouse_steps(seq)) {
+            continue;
+        }
+        if (sequence_is_running(seq)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void macro_after_sequence_reset(void)
+{
+    if (!macro_any_mouse_sequence_running()) {
+        hid_macro_cancel_mouse_spread();
+    }
+}
+
 static void macro_reset_mode_set_peers(int started_idx, uint8_t mode_set)
 {
     if (mode_set == 0) {
@@ -371,16 +402,24 @@ void macro_sequence_callback(void* arg) {
         add_event_to_report(&copy_report, sequence->previous_key);
     }
     xSemaphoreGive(s_seq_mux);
+    uint32_t step_delay_us = 0;
+    bool step_delay_valid = false;
     if (macro_event.header == HEADER_HID_MOUSE) {
-        /* Macro tick: apply script deltas only (buttons still from last_mouse_report).
-         * User aim deltas arrive on separate SPI reports; do not add them here. */
-        copy_report.event.mouse.x = 0;
-        copy_report.event.mouse.y = 0;
-        copy_report.event.mouse.wheel = 0;
-        copy_report.event.mouse.pan = 0;
-        /* Deltas are scaled at profile parse (eDPI × gun scale); use step values as-is. */
         macro_profile_apply_mouse_jitter(&macro_event.event.mouse);
-        set_mouse_movement_to_report(&copy_report.event.mouse, macro_event.event.mouse);
+        const hid_mouse_report_t *m = &macro_event.event.mouse;
+        /* One humanized draw for USB spread window and next bullet timer. */
+        step_delay_us = macro_profile_step_delay_us(key_seq->list[key_seq->pos].duration);
+        step_delay_valid = true;
+        if (macro_profile_mouse_drip_interval_us() == 0) {
+            copy_report.event.mouse.x = 0;
+            copy_report.event.mouse.y = 0;
+            copy_report.event.mouse.wheel = 0;
+            copy_report.event.mouse.pan = 0;
+            set_mouse_movement_to_report(&copy_report.event.mouse, *m);
+            hid_add_report(copy_report);
+        } else {
+            hid_macro_feed_mouse_step(m->x, m->y, m->wheel, m->pan, step_delay_us);
+        }
 #if USB_OUTPUT_PERF_LOG_ENABLE
         perf_stat_bump(PERF_MACRO_TICK_MOUSE);
 #endif
@@ -388,13 +427,11 @@ void macro_sequence_callback(void* arg) {
 #if USB_OUTPUT_PERF_LOG_ENABLE
         perf_stat_bump(PERF_MACRO_TICK_KBD);
 #endif
+        #if DEBUG_LOG
+        ESP_LOGI(pcTaskGetName(NULL), "macro_sequence(): Send report from: %s", key_seq->timer_args.name);
+        #endif
+        hid_add_report(copy_report);
     }
-
-    // Send the modified report to the HID task for USB transmission
-    #if DEBUG_LOG
-    ESP_LOGI(pcTaskGetName(NULL), "macro_sequence(): Send report from: %s", key_seq->timer_args.name);
-    #endif
-    hid_add_report(copy_report);
 
     // Schedule next sequence key with esp_timer
     // Increase the sequence position
@@ -415,15 +452,18 @@ void macro_sequence_callback(void* arg) {
         reset_sequence(key_seq);
         return;
     }  
-    start_sequence(key_seq);
+    if (step_delay_valid) {
+        start_sequence_with_delay(key_seq, step_delay_us);
+    } else {
+        start_sequence(key_seq);
+    }
     return;
 }
 
-void start_sequence(key_modification_sequence_t *sequence)
+void start_sequence_with_delay(key_modification_sequence_t *sequence, uint32_t step_us)
 {
     int64_t now = esp_timer_get_time();
     uint32_t nominal = sequence->list[sequence->pos].duration;
-    uint32_t step_us = macro_profile_step_delay_us(nominal);
     int64_t target = sequence->started_time + sequence->waited_sum + (int64_t)step_us;
     sequence->waited_sum += step_us;
     if (!sequence->timer) {
@@ -434,4 +474,10 @@ void start_sequence(key_modification_sequence_t *sequence)
     } else {
         esp_timer_start_once(sequence->timer, macro_profile_catchup_delay_us(nominal));
     }
+}
+
+void start_sequence(key_modification_sequence_t *sequence)
+{
+    uint32_t nominal = sequence->list[sequence->pos].duration;
+    start_sequence_with_delay(sequence, macro_profile_step_delay_us(nominal));
 }

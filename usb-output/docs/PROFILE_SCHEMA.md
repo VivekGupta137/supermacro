@@ -14,7 +14,7 @@ This document describes the JSON profile format consumed by **usb-output** firmw
 4. [Choosing a schema version](#choosing-a-schema-version)
 5. [Shared concepts (all versions)](#shared-concepts-all-versions)
 6. [Sensitivity scaling (`eDPI`)](#sensitivity-scaling-edpi)
-7. [Mouse and keyboard payloads](#mouse-and-keyboard-payloads)
+7. [HID keymaps (mouse & keyboard)](#hid-keymaps-mouse--keyboard)
 8. [Triggers and matching](#triggers-and-matching)
 9. [Schema v1](#schema-v1)
 10. [Schema v2](#schema-v2)
@@ -117,23 +117,76 @@ Each step is one timed HID output.
 
 ### Profile `humanize` (optional, root object)
 
-Makes macro timing less perfectly periodic and avoids **1 ms catch-up bursts** when the device falls slightly behind. Applied on each loop iteration (new random jitter every shot).
+Tweaks **when** bullet steps fire, **how** late ticks recover, **noise** on script deltas, and **how smoothly** recoil movement is sent over USB. All fields are optional; omit the whole object to use firmware defaults (spread at **8 ms** / ~125 Hz, soft catch-up, no timing jitter).
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `timingPct` | number | 0–25. Uniform ±% jitter on each step’s `us` (e.g. `5` → ±5% on `133000` µs). |
-| `jitterUs` | `[min, max]` | Extra uniform random delay added each step (µs). |
-| `mouse` | number | 0–3. Optional ±N counts random noise on macro `mouse.x` / `mouse.y` per tick. |
-| `catchupMinMs` | number | When a tick is late, minimum wait before the next tick (default **75** ms if `humanize` is present). Replaces the old fixed **1 ms** catch-up. |
+**Requires profile load** (SPIFFS boot or `POST /api/profile`). Changing JSON on disk alone does not apply until upload/reboot.
 
-Without `humanize`, firmware still uses a softer default catch-up (~25% of nominal `us`, at least 10 ms) instead of 1 ms.
+| Field | Type | Default (if `humanize` present) | Applies to |
+|-------|------|----------------------------------|------------|
+| `timingPct` | number 0–25 | `0` (off) | **Bullet timer** — random ±% on each step’s `us` before the next tick. |
+| `jitterUs` | `[min, max]` | none | **Bullet timer** — extra uniform random delay (µs) added to each step. |
+| `mouse` | number 0–3 | `0` (off) | **Bullet tick** — ±N counts random noise on script `mouse.x` / `mouse.y` when the step fires. |
+| `catchupMinMs` | number | **75** | **Late bullet timer** — minimum wait before the next tick if the device fell behind (avoids 1 ms catch-up bursts). Clamped ≥ 5 ms. |
+| `dripMs` | number 0–50 | **8** | **USB mouse delivery** — milliseconds between HID slices while spreading a step’s movement. |
+| `dripHz` | number | — | Same as `dripMs`, alternate units: `dripHz: 125` ≈ `dripMs: 8`. Ignored if `dripMs` is set. Clamped 1–2000 Hz. |
+
+#### `timingPct` (bullet cadence jitter)
+
+Adds uniform random variation to each step delay **after** the step runs, when scheduling the next bullet.
+
+- Example: `"timingPct": 5` on `"us": 133000` → next delay is `133000` ± up to **5%** (~±6650 µs).
+- **0** or omitted: no percentage jitter (step uses scaled `us` only).
+- Does **not** change how movement is split over USB; see `dripMs`.
+
+#### `jitterUs` (extra delay per bullet)
+
+Adds a second random delay on top of `us` (and on top of `timingPct`).
+
+- Example: `"jitterUs": [800, 2500]` → each step waits an extra **800–2500 µs** (uniform).
+- Useful to de-sync from perfectly periodic game/weapon timing.
+- Omit or use `[0, 0]` for none.
+
+#### `mouse` (pixel noise on script deltas)
+
+When a **mouse** step fires, random noise is applied to the script delta **before** spread/immediate send.
+
+- **0**: off (recommended for tuned recoil patterns).
+- **1–3**: ±1..±3 counts on `x` and `y` independently (clamped to int8).
+- Does **not** add noise to your physical aim (SPI passthrough).
+
+#### `catchupMinMs` (late tick recovery)
+
+If a bullet tick is **late** (CPU/USB busy), firmware schedules the next tick after at least this many milliseconds instead of catching up in **1 ms**.
+
+- Default **75** when `catchupMinMs` is omitted **and** `timingPct` or `jitterUs` is set (not applied for `dripMs`-only blocks).
+- Minimum **5** ms if you set a lower value.
+- Without `humanize`: firmware uses ~**25%** of nominal `us`, at least **10 ms** (not 1 ms).
+
+#### `dripMs` / `dripHz` (smooth USB recoil movement)
+
+Bullet steps still fire at your pattern’s `us` (~450 RPM → ~133 ms). Each step’s `mouse` delta is **spread** across many USB reports so the host sees smooth motion instead of one chunky jump per bullet.
+
+| `dripMs` | Approx. USB rate | Typical use |
+|----------|------------------|-------------|
+| **8** (default) | ~125 Hz | Good balance; matches many gaming mice. |
+| **4** | ~250 Hz | Smoother; slightly more CPU/USB traffic. |
+| **1** | ~1000 Hz | Very smooth; use if the host polls at 1 kHz. |
+| **0** | — | **Off** — full step delta in **one** report per bullet (legacy “robotic” feel). |
+
+- Use **`dripMs`** OR **`dripHz`**, not both; if both are present, **`dripMs` wins**.
+- `dripHz: 125` is equivalent to `dripMs: 8` (1 000 000 / 125 ≈ 8000 µs).
+- Spread is **discarded** when you release the macro trigger (e.g. LMB), so recoil does not keep pulling.
+- Your **aim** deltas on SPI are still sent; when a drip slice is due, it is **added** to the same report (int8 clamp per axis).
+
+Without a `humanize` block, firmware still spreads at **8 ms** (`HID_MOUSE_DRIP_INTERVAL_US` in `config.h`).
 
 ```json
 "humanize": {
   "timingPct": 5,
   "jitterUs": [800, 2500],
   "mouse": 0,
-  "catchupMinMs": 75
+  "catchupMinMs": 75,
+  "dripMs": 8
 }
 ```
 
@@ -164,8 +217,11 @@ Without `humanize`, firmware still uses a softer default catch-up (~25% of nomin
 
 On each macro tick for mouse steps:
 
-- **Buttons** come from your real mouse (passthrough).
-- **Movement** (`x`, `y`, `wheel`, `pan`) comes from the **script step only** (user aim deltas are not added on macro ticks).
+- **Buttons** come from your real mouse (passthrough on every SPI report).
+- **Movement** (`x`, `y`, `wheel`, `pan`) from the script step is **spread across USB reports** until the next step (default **8 ms** ≈ 125 Hz; tune with `humanize.dripMs` or `humanize.dripHz`). Bullet timing (`us` between steps) is unchanged; only HID delivery is smoothed.
+- **User aim** on SPI reports is unchanged; when a drip slice is due, it is **added** to the same report as your physical `x`/`y` (clamped to int8 per axis).
+
+Pending spread is **discarded** when no mouse macro sequence is running (e.g. LMB release), so recoil does not continue after you stop firing.
 
 The JSON flag `additiveMouse` is parsed for compatibility but does not change this behaviour.
 
@@ -218,57 +274,208 @@ All layers **multiply**. Example: `800/800 × 1.0 × 0.85` (ADS `modeScale`) = *
 
 ---
 
-## Mouse and keyboard payloads
+## HID keymaps (mouse & keyboard)
 
-### Mouse (`mouse`)
+Profiles use numeric **USB HID** values (same as TinyUSB `MOUSE_BUTTON_*` / `HID_KEY_*`). There are no string key names in JSON — use the decimal codes below.
+
+```json
+"press": { "mouse": { "b": 3 } },
+"press": { "kbd": { "m": 2, "k": [4, 5] } }
+```
+
+### Step payload fields
+
+**Mouse object** (`mouse`) — used in `steps[]`, `press`, `release`, hotkeys:
 
 | Field | Type | Range | Description |
 |-------|------|-------|-------------|
-| `b` | number | 0–31 (typical) | Button **bitmask** for triggers; usually omitted on movement steps. |
+| `b` | number | 0–31 | Button bitmask (triggers / hotkeys). Usually **omit** on movement-only steps. |
 | `x` | number | −128…127 | Relative X (int8 after clamp). |
-| `y` | number | −128…127 | Relative Y — positive usually = move cursor **down**. |
+| `y` | number | −128…127 | Relative Y — positive usually = cursor **down**. |
 | `w` | number | −128…127 | Vertical wheel. |
-| `p` | number | −128…127 | Horizontal wheel / pan if exposed. |
+| `p` | number | −128…127 | Horizontal wheel / pan. |
 
-### USB mouse button bitmask (`b`)
-
-| Bit | Hex | Decimal | Button |
-|-----|-----|---------|--------|
-| 0 | `0x01` | **1** | Left (LMB) |
-| 1 | `0x02` | **2** | Right (RMB) |
-| 2 | `0x04` | **4** | Middle (MMB) |
-| 3 | `0x08` | **8** | Back |
-| 4 | `0x10` | **16** | Forward |
-
-**Common chords**
-
-| Intent | `b` |
-|--------|-----|
-| LMB only | `1` |
-| RMB only | `2` |
-| LMB + RMB (ADS) | `3` |
-| RMB + MMB | `6` |
-| Back + Forward | `24` |
-
-### Keyboard (`kbd`)
+**Keyboard object** (`kbd`):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `m` | number | HID modifier bitmask. |
-| `k` | array | Up to **6** USB keycodes; **all** must be present (chord). |
+| `m` | number | Modifier byte bitmask (see table below). |
+| `k` | array | Up to **6** key **usage IDs**; **every** listed key must be down (AND chord). |
 
-### HID modifier bitmask (`m`)
+---
 
-| Bit | Hex | Name |
-|-----|-----|------|
-| 0 | `0x01` | Left Ctrl |
-| 1 | `0x02` | **Left Shift** (Rust crouch on default bindings) |
-| 2 | `0x04` | Left Alt |
-| 3 | `0x08` | Left GUI |
-| 4 | `0x10` | Right Ctrl |
-| 5 | `0x20` | Right Shift |
-| 6 | `0x40` | Right Alt |
-| 7 | `0x80` | Right GUI |
+### Mouse button map (`b`)
+
+Each button is one **bit**. The value in JSON is the **sum** (bitwise OR) of every button that must be down.
+
+| Bit | Hex | Decimal | Name | TinyUSB constant |
+|-----|-----|---------|------|------------------|
+| 0 | `0x01` | **1** | Left (LMB) | `MOUSE_BUTTON_LEFT` |
+| 1 | `0x02` | **2** | Right (RMB) | `MOUSE_BUTTON_RIGHT` |
+| 2 | `0x04` | **4** | Middle / wheel click (MMB) | `MOUSE_BUTTON_MIDDLE` |
+| 3 | `0x08` | **8** | Side back | `MOUSE_BUTTON_BACKWARD` |
+| 4 | `0x10` | **16** | Side forward | `MOUSE_BUTTON_FORWARD` |
+| 5–7 | `0x20`…`0x80` | 32, 64, 128 | Rare / device-specific | — |
+
+Firmware masks with the low **5 bits** (`b & 0x1F`) on the SPI path — enough for standard gaming mice.
+
+**Formula:** `b = button₁ | button₂ | …` (add decimals).
+
+#### All combinations (5 standard buttons)
+
+| Buttons held | Decimal `b` | Hex |
+|--------------|---------------|-----|
+| LMB | **1** | `0x01` |
+| RMB | **2** | `0x02` |
+| LMB + RMB | **3** | `0x03` |
+| MMB | **4** | `0x04` |
+| LMB + MMB | **5** | `0x05` |
+| RMB + MMB | **6** | `0x06` |
+| LMB + RMB + MMB | **7** | `0x07` |
+| Back | **8** | `0x08` |
+| LMB + Back | **9** | `0x09` |
+| RMB + Back | **10** | `0x0A` |
+| LMB + RMB + Back | **11** | `0x0B` |
+| MMB + Back | **12** | `0x0C` |
+| LMB + MMB + Back | **13** | `0x0D` |
+| RMB + MMB + Back | **14** | `0x0E` |
+| LMB + RMB + MMB + Back | **15** | `0x0F` |
+| Forward | **16** | `0x10` |
+| LMB + Forward | **17** | `0x11` |
+| RMB + Forward | **18** | `0x12` |
+| LMB + RMB + Forward | **19** | `0x13` |
+| MMB + Forward | **20** | `0x14` |
+| LMB + MMB + Forward | **21** | `0x15` |
+| RMB + MMB + Forward | **22** | `0x16` |
+| LMB + RMB + MMB + Forward | **23** | `0x17` |
+| Back + Forward | **24** | `0x18` |
+| LMB + Back + Forward | **25** | `0x19` |
+| RMB + Back + Forward | **26** | `0x1A` |
+| LMB + RMB + Back + Forward | **27** | `0x1B` |
+| MMB + Back + Forward | **28** | `0x1C` |
+| LMB + MMB + Back + Forward | **29** | `0x1D` |
+| RMB + MMB + Back + Forward | **30** | `0x1E` |
+| LMB + RMB + MMB + Back + Forward | **31** | `0x1F` |
+
+#### Game / profile examples (mouse)
+
+| Use case | JSON `press` / hotkey |
+|----------|----------------------|
+| Hipfire (LMB only, v3 exact) | `"pressMode": "exact"`, `"mouse": { "b": 1 }` |
+| ADS (LMB + RMB) | `"mouse": { "b": 3 }` |
+| RMB-only macro | `"mouse": { "b": 2 }` |
+| Next weapon (side button) | `"nextWeapon": { "mouse": { "b": 4 } }` or `{ "b": 8 }` — **match your mouse** |
+| Toggle macros | `"toggleMacros": { "mouse": { "b": 16 } }` (forward) |
+
+DPI/profile buttons on some mice are **not** in this bitmask; they may appear as keyboard/consumer HID elsewhere.
+
+---
+
+### Keyboard map (`kbd`)
+
+JSON maps directly to the USB HID **boot keyboard** report the firmware forwards:
+
+| JSON | HID report field | Meaning |
+|------|------------------|---------|
+| `m` | `modifier` byte | Left/right Ctrl, Shift, Alt, Gui bits |
+| `k[]` | `keycode[0..5]` | Up to 6 simultaneous **key usage IDs** (not ASCII) |
+
+**Matching rules (triggers):**
+
+- Every value in `k` must appear in the key slots (order does not matter).
+- If `m` is non-zero, those modifier bits must be **down**; extra modifiers are allowed.
+- Firmware also treats boot usages **`224`–`231`** (`0xE0`–`0xE7`) in a key slot as modifiers (e.g. Left Shift = usage **`225`** / `0xE1`).
+
+**Recommended:** use `m` for Shift/Ctrl/Alt; use `k` only for normal keys.
+
+#### Modifier bitmask (`m`)
+
+| Bit | Decimal `m` | Hex | Key |
+|-----|-------------|-----|-----|
+| 0 | **1** | `0x01` | Left Ctrl |
+| 1 | **2** | `0x02` | **Left Shift** (Rust crouch, default layout) |
+| 2 | **4** | `0x04` | Left Alt |
+| 3 | **8** | `0x08` | Left Gui (Windows / Meta) |
+| 4 | **16** | `0x10` | Right Ctrl |
+| 5 | **32** | `0x20` | Right Shift |
+| 6 | **64** | `0x40` | Right Alt |
+| 7 | **128** | `0x80` | Right Gui |
+
+**Combined modifiers:** add values (Ctrl+Shift → `m: 3`).
+
+| Chord | `m` |
+|-------|-----|
+| Left Shift only | **2** |
+| Left Ctrl only | **1** |
+| Left Ctrl + Left Shift | **3** |
+| Left Alt only | **4** |
+
+#### Key usage IDs (`k` array)
+
+Each number in `k` is a **USB HID keyboard usage ID** (usage page `0x07`), same as TinyUSB `HID_KEY_*` in `class/hid/hid.h`.
+
+**Letters and digits**
+
+| Key | Dec | Key | Dec | Key | Dec |
+|-----|-----|-----|-----|-----|-----|
+| A | **4** | H | **11** | O | **18** |
+| B | **5** | I | **12** | P | **19** |
+| C | **6** | J | **13** | Q | **20** |
+| D | **7** | K | **14** | R | **21** |
+| E | **8** | L | **15** | S | **22** |
+| F | **9** | M | **16** | T | **23** |
+| G | **10** | N | **17** | U | **24** |
+| | | | | V | **25** |
+| | | | | W | **26** |
+| | | | | X | **27** |
+| | | | | Y | **28** |
+| | | | | Z | **29** |
+| 1 | **30** | 4 | **33** | 7 | **36** |
+| 2 | **31** | 5 | **34** | 8 | **37** |
+| 3 | **32** | 6 | **35** | 9 | **38** |
+| | | | | 0 | **39** |
+
+**Editing / navigation**
+
+| Key | Dec | Key | Dec |
+|-----|-----|-----|-----|
+| Enter | **40** | Insert | **73** |
+| Escape | **41** | Home | **74** |
+| Backspace | **42** | Page Up | **75** |
+| Tab | **43** | Delete | **76** |
+| Space | **44** | End | **77** |
+| | | Page Down | **78** |
+| | | Arrow Right | **79** |
+| | | Arrow Left | **80** |
+| | | Arrow Down | **81** |
+| | | Arrow Up | **82** |
+
+**Function keys:** F1 **58** … F12 **69** (each +1).
+
+**Keypad:** Num Lock **83**, `/` **84**, `*` **85**, `-` **86**, `+` **87**, Enter **88**, digits **89**–**98**, `.` **99**.
+
+**Punctuation (US layout):** `-` **45**, `=` **46**, `[` **47**, `]` **48**, `\` **49**, `;` **51**, `'` **52**, `` ` `` **53**, `,` **54**, `.` **55**, `/` **56**, Caps Lock **57**.
+
+#### Keyboard chord examples
+
+| Intent | JSON |
+|--------|------|
+| Hold **A** | `"kbd": { "k": [4] }` |
+| **W** + **D** | `"kbd": { "k": [26, 7] }` |
+| **Left Shift** only | `"kbd": { "m": 2 }` |
+| **Ctrl + C** | `"kbd": { "m": 1, "k": [6] }` |
+| **F1** in a step | `{ "us": 50000, "kbd": { "k": [58] } }` |
+| Release on **X** | `"release": { "kbd": { "k": [27] } }` |
+
+**v3 crouch + fire:** `"press": { "mouse": { "b": 1 }, "kbd": { "m": 2 } }` with `"pressMode": "exact"`.
+
+**Keyboard on SPI:** `kbd` triggers need keyboard reports from **usb-input** over SPI.
+
+#### Finding codes for other keys
+
+1. [USB HID usage tables](https://www.usb.org/sites/default/files/hut1_12.pdf) — keyboard page `0x07`; usage ID = JSON number.
+2. TinyUSB `HID_KEY_*` in `hid.h` — constant value = JSON number.
+3. UART `DEBUG_LOG` — log reports while pressing keys.
 
 ---
 
@@ -309,10 +516,10 @@ Use when a mode should only run with **both** a mouse chord and a modifier/key h
 |---------|---------|
 | Hipfire standing | `{ "mouse": { "b": 1 } }` + `"pressMode": "exact"` |
 | Hipfire crouch (LMB + LShift) | `{ "mouse": { "b": 1 }, "kbd": { "m": 2 } }` + `"exact"` |
-
-**Keyboard path:** Combined `press` needs **keyboard reports on SPI** from **usb-input** (crouch modifier must pass through the input ESP, not only a keyboard plugged into the PC). Firmware accepts `m:2` in the modifier byte **or** boot usage `0xE1` (Left Shift) in a key slot.
 | ADS standing | `{ "mouse": { "b": 3 } }` |
 | ADS crouch | `{ "mouse": { "b": 3 }, "kbd": { "m": 2 } }` |
+
+**Keyboard path:** Combined `press` needs **keyboard reports on SPI** from **usb-input**. Firmware accepts `m:2` (Left Shift) **or** usage **225** (`0xE1`) in a key slot.
 
 The macro starts on the **rising edge** of the full condition (e.g. Shift pressed while LMB already down, or LMB pressed while Shift already down). Releasing **either** mouse buttons or the keyboard requirement stops the mode.
 
