@@ -4,4 +4,5 @@
 #define HEADER_PC_TRANSMISSION 0xA2
 
 void hid_init_multiplexer();
+void hid_wake_pump(void);
 void hid_add_report(hid_transmit_t report);

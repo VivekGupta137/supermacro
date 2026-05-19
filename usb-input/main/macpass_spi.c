@@ -99,11 +99,6 @@ void spi_task_slave_pc_receiver(void *pvParameters){
             #if DEBUG_LOG
             ESP_LOGI(pcTaskGetName(NULL), "SPI received transmission invalid with => %x; %x;", spi_pc_buffer->header, spi_pc_buffer->crc);
             #endif
-
-            // Corrupted frame: back off briefly so a stuck master does not spin hot.
-            spi_slave_disable(SPI_PC_RECEIVER);
-            vTaskDelay(pdMS_TO_TICKS(500));
-            spi_slave_enable(SPI_PC_RECEIVER);
             continue;
         }
         #if DEBUG_LOG

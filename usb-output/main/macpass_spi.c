@@ -26,14 +26,10 @@ void spi_task_slave_hid_receiver(void *pvParameters){
         assert(ret == ESP_OK);
         if ((spi_hid_buffer->hid.header != HEADER_HID_KEYBOARD && spi_hid_buffer->hid.header != HEADER_HID_MOUSE) ||
             spi_hid_buffer->crc != esp_crc16_le(UINT16_MAX, (void*)&spi_hid_buffer->hid.event, sizeof(hid_report_t))){
-            ESP_LOGI(pcTaskGetName(NULL), "SPI received transmission invalid with => %x; %x;", spi_hid_buffer->hid.header, spi_hid_buffer->crc);
-
-            // Where are not expecting an invalid SPI transmission.
-            // But this happens when the other device is turned off.
-            // Disabling SPI for 500ms agains incorrect transaction.
-            spi_slave_disable(SPI_HID_RECEIVER);
-            vTaskDelay(pdMS_TO_TICKS(500));
-            spi_slave_enable(SPI_HID_RECEIVER);
+#if DEBUG_LOG
+            ESP_LOGI(pcTaskGetName(NULL), "SPI received transmission invalid with => %x; %x;", spi_hid_buffer->hid.header,
+                     spi_hid_buffer->crc);
+#endif
             continue;
         }
         #if DEBUG_LOG

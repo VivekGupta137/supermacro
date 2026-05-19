@@ -34,3 +34,12 @@
 // Throttled HID input stats only (one line per window); independent of DEBUG_LOG
 #define USB_INPUT_PERF_LOG_ENABLE 1
 #define USB_INPUT_PERF_LOG_WINDOW_MS 1000
+
+// USB host: wait for hub/peripheral power before usb_host_install() (usb_lib_task).
+#ifndef USB_HOST_BOOT_DELAY_MS
+#define USB_HOST_BOOT_DELAY_MS 800
+#endif
+// Defer SPI3 slave (LED path) until root enumeration can finish without DMA contention.
+#ifndef USB_SPI_SLAVE_DEFER_MS
+#define USB_SPI_SLAVE_DEFER_MS 500
+#endif

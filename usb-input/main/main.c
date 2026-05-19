@@ -1,14 +1,20 @@
 // Import global project config
 #include "config.h"
 
+static void spi_slave_deferred_init_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(USB_SPI_SLAVE_DEFER_MS));
+    spi_init_slave_pc_receiver();
+    vTaskDelete(NULL);
+}
+
 void app_main(void)
 {
-    ESP_LOGI(LOG_TITLE, "Starting USB Input");
+    ESP_LOGI(LOG_TITLE, "Starting USB Input (built %s %s)", __DATE__, __TIME__);
 
-    // SPI first; USB host starts after a short hub power-up delay inside usb_lib_task.
     spi_init_master_hid_sender();
-    spi_init_slave_pc_receiver();
     usb_init();
+    xTaskCreate(spi_slave_deferred_init_task, "spi_pc_defer", 2048, NULL, 10, NULL);
 
     // Leave main() in background
     while (true)

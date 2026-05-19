@@ -4,10 +4,11 @@
 
 # (From USB template)
 CONFIG_USB_HOST_HUBS_SUPPORTED=y
-# Slightly longer hub/port timing — helps flaky CHECK_ADDR on downstream ports
+# Root hub timing — slow keyboards/hubs need longer recovery (Espressif IDFGH-14542)
 CONFIG_USB_HOST_DEBOUNCE_DELAY_MS=300
-CONFIG_USB_HOST_SET_ADDR_RECOVERY_MS=30
-CONFIG_USB_HOST_RESET_RECOVERY_MS=50
+CONFIG_USB_HOST_RESET_HOLD_MS=50
+CONFIG_USB_HOST_SET_ADDR_RECOVERY_MS=200
+CONFIG_USB_HOST_RESET_RECOVERY_MS=1000
 
 # Force QIO flash for maximum performance
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y

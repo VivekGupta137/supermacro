@@ -1,5 +1,9 @@
 // Import global project config
 #include "config.h"
+#include "macpass_hid.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 // --- TinyUSB HID callbacks
 
@@ -41,5 +45,8 @@ void tud_user_initialization(){
     tusb_cfg.descriptor.high_speed_config = hid_configuration_descriptor;
 #endif // TUD_OPT_HIGH_SPEED
     ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
+    /* Drain any reports queued during Wi-Fi bring-up before USB was ready. */
+    vTaskDelay(pdMS_TO_TICKS(50));
+    hid_wake_pump();
     ESP_LOGI(LOG_TITLE, "USB initialization DONE");
 }
