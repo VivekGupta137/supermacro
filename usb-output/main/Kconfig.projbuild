@@ -64,14 +64,14 @@ menu "Macro profile / web UI"
         config MACRO_WIFI_STA_HOSTNAME
             string "DHCP hostname on LAN (optional, Station only)"
             depends on MACRO_WIFI_ROLE_STA
-            default "supermacro"
+            default "usb-hid"
             help
                 Sets the DHCP client hostname (visible on many routers). This build does not enable mDNS .local.
 
         config MACRO_WIFI_AP_SSID
             string "SoftAP SSID (SoftAP mode only)"
             depends on MACRO_WIFI_ROLE_SOFTAP
-            default "MacroPassthrough"
+            default "USB-Config"
 
         config MACRO_WIFI_AP_PASSWORD
             string "SoftAP password (WPA2 min 8 chars; SoftAP mode only)"

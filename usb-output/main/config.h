@@ -18,6 +18,7 @@
 #include "macpass_usb.h"
 #include "macpass_macro.h"
 #include "macpass_tool.h"
+#include "usb_identity.h"
 
 // Define title for logging: for UART debug purposes
 #define LOG_TITLE "MacroPassthrough"
@@ -45,13 +46,6 @@
 static const uint8_t hid_report_descriptor[] = {
     TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(HID_ITF_PROTOCOL_KEYBOARD)),
     TUD_HID_REPORT_DESC_MOUSE(HID_REPORT_ID(HID_ITF_PROTOCOL_MOUSE))};
-static const char *hid_string_descriptor[5] __unused = {
-    (char[]){0x09, 0x04},    // 0: is supported language is English (0x0409)
-    "TinyUSB",               // 1: Manufacturer
-    "TinyUSB Device",        // 2: Product
-    "123456",                // 3: Serials, should use chip ID
-    "Example HID interface", // 4: HID
-};
 static const uint8_t hid_configuration_descriptor[] = {
     // Configuration number, interface count, string index, total length, attribute, power in mA
     TUD_CONFIG_DESCRIPTOR(1, 1, 0, TUSB_DESC_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
@@ -59,21 +53,6 @@ static const uint8_t hid_configuration_descriptor[] = {
     // Interface number, string index, boot protocol, report descriptor len, EP In address, size & polling interval
     TUD_HID_DESCRIPTOR(0, 4, true, sizeof(hid_report_descriptor), 0x81, 16, 1),
 };
-static const tusb_desc_device_t espressif_device = {
-    .bLength = 0x12,
-    .bDescriptorType = 0x01,
-    .bcdUSB = 0x200,
-    .bDeviceClass = 0x00,
-    .bDeviceSubClass = 0x00,
-    .bDeviceProtocol = 0x00,
-    .bMaxPacketSize0 = 0x40,
-    .idVendor = 0x303A,
-    .idProduct = 0x4004,
-    .bcdDevice = 0x0100,
-    .iManufacturer = 0x01,
-    .iProduct = 0x02,
-    .iSerialNumber = 0x03,
-    .bNumConfigurations = 0x01};
 
 // ---
 // USER sequence (compile-time default in macro_defaults.c; optional JSON on flash if web UI enabled)

@@ -1,0 +1,31 @@
+#pragma once
+
+/**
+ * USB identity overrides — copy to config_custom.h (gitignored).
+ *
+ * Default (if you omit this file) is Holtek 04D9:1400 — a mass-market OEM
+ * keyboard+mouse controller ID from public USB databases, not a retail gaming brand.
+ */
+
+/* Documented combo keyboard+mouse controller (usb.ids / linux-hardware.org). */
+#define USB_DESC_VID 0x04D9
+#define USB_DESC_PID 0x1400
+
+#define USB_DESC_BCD_DEVICE 0x0100
+
+#define USB_DESC_MANUFACTURER "Holtek Semiconductor, Inc."
+#define USB_DESC_PRODUCT      "PS/2 keyboard + mouse controller"
+#define USB_DESC_INTERFACE    "HID"
+
+/* Serial: unique per board from MAC (usb_identity.c). */
+
+/*
+ * Optional: open-hardware identity (pid.codes) — NOT a retail mouse.
+ * Register your own PID at https://pid.codes/ before shipping boards.
+ *
+ * #define USB_DESC_VID 0x1209
+ * #define USB_DESC_PID 0x5301
+ * #define USB_DESC_MANUFACTURER "Open HID"
+ * #define USB_DESC_PRODUCT      "Keyboard+Mouse HID"
+ * #define USB_DESC_INTERFACE    "HID"
+ */

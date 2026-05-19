@@ -6,6 +6,7 @@ All available docs under this folder:
 - [Profile Schema](./PROFILE_SCHEMA.md) — includes **usage examples** (copy-paste JSON)
 - [Macro Structure Detailed Guide](./MACRO_STRUCTURE_DETAILED_GUIDE.md)
 - [Macro Web UI Plan](./MACRO_WEB_UI_PLAN.md)
+- [USB Identity](./USB_IDENTITY.md) — VID/PID and strings (not Espressif/TinyUSB)
 
 Example JSON profiles (repo `usb-output/profiles/`):
 
