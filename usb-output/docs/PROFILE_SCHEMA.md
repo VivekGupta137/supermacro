@@ -130,6 +130,8 @@ Tweaks **when** bullet steps fire, **how** late ticks recover, **noise** on scri
 | `dripMs` | number 0–50 | **8** | **USB mouse delivery** — milliseconds between HID slices while spreading a step’s movement. |
 | `dripHz` | number | — | Same as `dripMs`, alternate units: `dripHz: 125` ≈ `dripMs: 8`. Ignored if `dripMs` is set. Clamped 1–2000 Hz. |
 
+**Separation:** `timingPct` / `jitterUs` / `catchupMinMs` affect only the **bullet timer**. `dripMs` / `dripHz` affect only **USB movement** over the step’s nominal `us`. They do not share a delay value (avoids jitter cutting a spread window short).
+
 #### `timingPct` (bullet cadence jitter)
 
 Adds uniform random variation to each step delay **after** the step runs, when scheduling the next bullet.
@@ -164,7 +166,7 @@ If a bullet tick is **late** (CPU/USB busy), firmware schedules the next tick af
 
 #### `dripMs` / `dripHz` (smooth USB recoil movement)
 
-Bullet steps still fire at your pattern’s `us` (~450 RPM → ~133 ms). Each step’s `mouse` delta is **spread** across many USB reports so the host sees smooth motion instead of one chunky jump per bullet.
+Bullet steps still fire at your pattern’s `us` (~450 RPM → ~133 ms). Each step’s `mouse` delta is **spread** across USB reports over that **nominal** `us` (time-linear lerp, same idea as Python `SmoothMove` / C++ `SmoothMoveMouse` over the bullet interval). Bullet **timing** may still jitter via `timingPct` / `jitterUs` independently.
 
 | `dripMs` | Approx. USB rate | Typical use |
 |----------|------------------|-------------|
@@ -186,7 +188,7 @@ Without a `humanize` block, firmware still spreads at **8 ms** (`HID_MOUSE_DRIP_
   "jitterUs": [800, 2500],
   "mouse": 0,
   "catchupMinMs": 75,
-  "dripMs": 8
+  "dripMs": 4
 }
 ```
 

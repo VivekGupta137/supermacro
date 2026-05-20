@@ -8,7 +8,7 @@
     "jitterUs": [800, 2500],
     "mouse": 0,
     "catchupMinMs": 75,
-    "dripMs": 8
+    "dripMs": 4
   },
   "macrosOn": true,
   "activeWeapon": 0,

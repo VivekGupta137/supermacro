@@ -56,5 +56,5 @@ void macro_sequence_callback(void* arg);
 void macro_init(void);
 void macro_sequences_apply(const group_sequence_t *src);
 void start_sequence(key_modification_sequence_t *sequence);
-/** Schedule next tick after `step_us` (use the same value passed to hid_macro_feed_mouse_step). */
+/** Schedule next bullet tick after `step_us` (jittered timer; spread uses nominal step `us`). */
 void start_sequence_with_delay(key_modification_sequence_t *sequence, uint32_t step_us);

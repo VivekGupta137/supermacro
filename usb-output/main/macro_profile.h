@@ -26,7 +26,7 @@ uint8_t macro_profile_active_script_index(void);
 const char *macro_profile_script_name(uint8_t index);
 void macro_profile_build_status_json(char *buf, size_t buflen);
 
-/** Per-step delay after humanize jitter (µs). */
+/** Next bullet timer delay (nominal step `us` + timingPct/jitterUs when humanize enabled). */
 uint32_t macro_profile_step_delay_us(uint32_t nominal_us);
 /** Delay when a tick is late — avoids 1 ms catch-up bursts. */
 uint32_t macro_profile_catchup_delay_us(uint32_t nominal_us);

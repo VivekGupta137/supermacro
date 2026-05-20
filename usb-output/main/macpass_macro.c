@@ -407,8 +407,9 @@ void macro_sequence_callback(void* arg) {
     if (macro_event.header == HEADER_HID_MOUSE) {
         macro_profile_apply_mouse_jitter(&macro_event.event.mouse);
         const hid_mouse_report_t *m = &macro_event.event.mouse;
-        /* One humanized draw for USB spread window and next bullet timer. */
-        step_delay_us = macro_profile_step_delay_us(key_seq->list[key_seq->pos].duration);
+        uint32_t nominal_us = key_seq->list[key_seq->pos].duration;
+        /* Spread uses nominal step `us`; bullet timer uses jittered delay (no shared window). */
+        step_delay_us = macro_profile_step_delay_us(nominal_us);
         step_delay_valid = true;
         if (macro_profile_mouse_drip_interval_us() == 0) {
             copy_report.event.mouse.x = 0;
@@ -418,7 +419,7 @@ void macro_sequence_callback(void* arg) {
             set_mouse_movement_to_report(&copy_report.event.mouse, *m);
             hid_add_report(copy_report);
         } else {
-            hid_macro_feed_mouse_step(m->x, m->y, m->wheel, m->pan, step_delay_us);
+            hid_macro_feed_mouse_step(m->x, m->y, m->wheel, m->pan, nominal_us);
         }
 #if USB_OUTPUT_PERF_LOG_ENABLE
         perf_stat_bump(PERF_MACRO_TICK_MOUSE);
