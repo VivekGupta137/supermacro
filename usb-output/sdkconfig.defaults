@@ -17,8 +17,8 @@ CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# Web UI uses HTTP polling only (WebSocket holds extra sockets; not used by index.html)
-# CONFIG_HTTPD_WS_SUPPORT is not set
+# Web UI: WebSocket for live status; HTTP for profile load/upload
+CONFIG_HTTPD_WS_SUPPORT=y
 
 # HTTP server + browser refresh (aborted TCP pcbs need headroom + fast TIME_WAIT)
 CONFIG_LWIP_MAX_SOCKETS=32

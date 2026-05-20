@@ -36,7 +36,8 @@
 </main>
 <script>
 (function () {
-  var q = Promise.resolve(), ab = null;
+  var q = Promise.resolve();
+  var ws = null, wsRetry = null, profileLoaded = false;
   var editor = ace.edit('profile-json');
   editor.setTheme('ace/theme/tomorrow_night');
   editor.session.setMode('ace/mode/json');
@@ -70,21 +71,43 @@
     catch (e) { editor.setValue(t, -1); }
   }
   function getJson() { return editor.getValue(); }
+  /* Serialize HTTP; never abort the previous request (aborted TCP leaks lwIP sockets on ESP32). */
   function fetchQ(url, opts) {
     opts = opts || {};
-    function go() {
-      if (ab) ab.abort();
-      ab = new AbortController();
-      var t = setTimeout(function () { ab.abort(); }, 12000);
-      var init = { cache: 'no-store', signal: ab.signal };
+    var p = q.then(function () {
+      var ac = new AbortController();
+      var t = setTimeout(function () { ac.abort(); }, 12000);
+      var init = { cache: 'no-store', signal: ac.signal };
       if (opts.method) init.method = opts.method;
       if (opts.body != null) init.body = opts.body;
       if (opts.headers) init.headers = opts.headers;
-      return fetch(url, init).finally(function () { clearTimeout(t); ab = null; });
-    }
-    var p = q.then(go, go);
+      return fetch(url, init).finally(function () { clearTimeout(t); });
+    });
     q = p.catch(function () {});
     return p;
+  }
+  function connectWs() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    try { ws = new WebSocket(proto + '//' + location.host + '/ws'); } catch (e) { return; }
+    ws.onopen = function () {
+      setConn(true, 'Live (WebSocket)');
+    };
+    ws.onmessage = function (ev) {
+      try {
+        applyStatus(JSON.parse(ev.data));
+        setConn(true, 'Live (WebSocket)');
+      } catch (e) {}
+    };
+    ws.onclose = function () {
+      ws = null;
+      if (!wsRetry) {
+        wsRetry = setTimeout(function () { wsRetry = null; connectWs(); }, 3000);
+      }
+      if (!profileLoaded) return;
+      setConn(false, 'WS offline — use Reload');
+    };
+    ws.onerror = function () {};
   }
   function setToggle(on) {
     var b = $('btn-toggle');
@@ -110,26 +133,32 @@
     $('msg').textContent = txt || '';
     $('msg').className = ok ? 'text-xs text-green-400' : (txt ? 'text-xs text-amber-400' : 'text-xs text-zinc-500');
   }
-  function refresh() {
-    setConn(false, 'Loading…');
+  function refreshStatusHttp() {
     return fetchQ('/api/ping')
       .then(function (r) { if (!r.ok) throw 0; return fetchQ('/api/status'); })
       .then(function (r) { if (!r.ok) throw 0; return r.json(); })
-      .then(function (j) { applyStatus(j); setConn(true, 'Connected'); })
-      .catch(function () { setConn(false, 'Offline — use Reload'); });
+      .then(function (j) { applyStatus(j); setConn(true, 'Connected (HTTP)'); });
   }
   function loadProfile() {
     return fetchQ('/api/profile')
       .then(function (r) { if (!r.ok) throw 0; return r.text(); })
-      .then(setJson)
+      .then(function (t) { profileLoaded = true; setJson(t); })
       .catch(function () { setMsg('Could not load profile JSON.', false); });
   }
   function boot() {
-    return refresh().then(loadProfile).then(function () { setMsg('', false); });
+    setConn(false, 'Loading…');
+    connectWs();
+    return refreshStatusHttp()
+      .catch(function () { setConn(false, 'Offline — use Reload'); })
+      .then(loadProfile)
+      .then(function () { setMsg('', false); });
   }
   $('btn-toggle').onclick = function () {
     fetchQ('/api/toggle-macros', { method: 'POST' })
-      .then(function (r) { if (!r.ok) throw 0; return refresh(); })
+      .then(function (r) {
+        if (!r.ok) throw 0;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return refreshStatusHttp();
+      })
       .catch(function () { setMsg('Toggle failed.', false); });
   };
   $('btn-reload').onclick = boot;

@@ -24,7 +24,6 @@ if(EXISTS "${_sdkconfig}")
       string(APPEND _sdkcontent "\n${_key}=${_val}\n")
     endif()
   endforeach()
-  string(REGEX REPLACE "CONFIG_HTTPD_WS_SUPPORT=y[^\n\r]*\n?" "# CONFIG_HTTPD_WS_SUPPORT is not set\n" _sdkcontent "${_sdkcontent}")
   file(WRITE "${_sdkconfig}" "${_sdkcontent}")
 endif()
 

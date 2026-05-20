@@ -49,7 +49,7 @@ static TaskHandle_t s_http_recovery_task;
 
 #define HTTP_RESTART_FAIL_COOLDOWN_MS 20000
 #define HTTP_WIFI_RESET_COOLDOWN_MS 15000
-#define HTTP_ACCEPT113_PURGE_LIMIT 2
+#define HTTP_ACCEPT113_PURGE_LIMIT 4
 #define HTTP_ACCEPT113_WINDOW_US 10000000
 #define HTTP_MIN_PURGE_INTERVAL_US 2500000
 
@@ -240,6 +240,15 @@ static void http_recovery_task(void *arg)
             continue;
         }
 #endif
+        if (s_http_need_wifi_reset && http_recovery_allowed()) {
+            /* SoftAP / non-STA: restart HTTP only (no 3 s Wi-Fi disconnect). */
+            ESP_LOGW(TAG, "Restarting HTTP listener (socket recovery)");
+            s_http_need_wifi_reset = false;
+            http_stop_listener();
+            vTaskDelay(pdMS_TO_TICKS(200));
+            http_server_start();
+            continue;
+        }
 
         if (s_http_purge_only && s_httpd != NULL) {
             http_purge_sessions_only();
@@ -294,16 +303,8 @@ static void http_health_timer_cb(void *arg)
         return;
     }
 
-    if (s_httpd != NULL) {
-        int client_fds[16];
-        size_t count = sizeof(client_fds) / sizeof(client_fds[0]);
-        if (httpd_get_client_list(s_httpd, &count, client_fds) == ESP_OK &&
-            count >= (size_t)s_http_max_clients) {
-            for (size_t i = 0; i < count; i++) {
-                httpd_sess_trigger_close(s_httpd, client_fds[i]);
-            }
-        }
-    }
+    /* Do not mass-close clients at max_open_sockets — lru_purge handles stale slots;
+     * closing all sessions mid-request caused wedged API until reboot. */
 
     if (!http_recovery_allowed()) {
         return;
@@ -311,10 +312,6 @@ static void http_health_timer_cb(void *arg)
 
     if (s_http_purge_only) {
         http_schedule_recovery();
-        return;
-    }
-
-    if (!http_recovery_allowed()) {
         return;
     }
 
@@ -892,12 +889,12 @@ static void http_server_start(void)
     /* lwIP often returns ENOPROTOOPT (109) for SO_LINGER on close. */
     cfg.enable_so_linger = false;
     /* Leave lwIP headroom for aborted refresh connections (not in httpd client list). */
-    cfg.max_open_sockets = 4;
-    if (cfg.max_open_sockets > CONFIG_LWIP_MAX_SOCKETS - 8) {
-        cfg.max_open_sockets = CONFIG_LWIP_MAX_SOCKETS - 8;
+    cfg.max_open_sockets = 5;
+    if (cfg.max_open_sockets > CONFIG_LWIP_MAX_SOCKETS - 6) {
+        cfg.max_open_sockets = CONFIG_LWIP_MAX_SOCKETS - 6;
     }
-    if (cfg.max_open_sockets < 2) {
-        cfg.max_open_sockets = 2;
+    if (cfg.max_open_sockets < 3) {
+        cfg.max_open_sockets = 3;
     }
     s_http_max_clients = cfg.max_open_sockets;
     cfg.max_uri_handlers = 24;
@@ -920,7 +917,7 @@ static void http_server_start(void)
         return;
     }
 
-#if CONFIG_HTTPD_WS_SUPPORT && (CONFIG_LWIP_MAX_SOCKETS >= 16)
+#if CONFIG_HTTPD_WS_SUPPORT
     macro_ws_init(s_httpd);
 #endif
 
@@ -948,13 +945,13 @@ static void http_server_start(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_prof_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_next));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_tog));
-#if CONFIG_HTTPD_WS_SUPPORT && (CONFIG_LWIP_MAX_SOCKETS >= 16)
+#if CONFIG_HTTPD_WS_SUPPORT
     httpd_uri_t u_ws = {.uri = "/ws", .method = HTTP_GET, .handler = macro_ws_handler, .user_ctx = NULL,
                         .is_websocket = true};
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_ws));
     ESP_LOGI(TAG, "HTTP server on port 80 (WebSocket /ws enabled)");
 #else
-    ESP_LOGI(TAG, "HTTP server on port 80 (polling UI, WS off)");
+    ESP_LOGI(TAG, "HTTP server on port 80 (HTTP only, enable CONFIG_HTTPD_WS_SUPPORT for /ws)");
 #endif
 
     if (s_http_health_timer == NULL) {
