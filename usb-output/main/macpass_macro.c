@@ -463,13 +463,18 @@ void macro_sequence_callback(void* arg) {
 
 void start_sequence_with_delay(key_modification_sequence_t *sequence, uint32_t step_us)
 {
+    if (!sequence->timer) {
+        return;
+    }
+    /* step_us == 0: fire step at pos now (used by start_sequence after press/release). */
+    if (step_us == 0) {
+        esp_timer_start_once(sequence->timer, 1);
+        return;
+    }
     int64_t now = esp_timer_get_time();
     uint32_t nominal = sequence->list[sequence->pos].duration;
     int64_t target = sequence->started_time + sequence->waited_sum + (int64_t)step_us;
     sequence->waited_sum += step_us;
-    if (!sequence->timer) {
-        return;
-    }
     if (target > now) {
         esp_timer_start_once(sequence->timer, (uint64_t)(target - now));
     } else {
@@ -479,6 +484,6 @@ void start_sequence_with_delay(key_modification_sequence_t *sequence, uint32_t s
 
 void start_sequence(key_modification_sequence_t *sequence)
 {
-    uint32_t nominal = sequence->list[sequence->pos].duration;
-    start_sequence_with_delay(sequence, macro_profile_step_delay_us(nominal));
+    /* Step 0 runs immediately; callback schedules list[0].us before step 1. */
+    start_sequence_with_delay(sequence, 0);
 }
