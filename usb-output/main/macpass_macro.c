@@ -140,6 +140,68 @@ static void macro_press_sync_running_sequences(void)
 
 static void macro_try_start_press_mode(int started_idx, key_modification_sequence_t *sequence);
 
+static key_modification_sequence_t *s_pending_starts[MAX_KEY_MODIFICATION_SEQUENCE];
+static uint8_t s_pending_start_count;
+
+static void macro_pending_starts_clear(void)
+{
+    s_pending_start_count = 0;
+}
+
+static void macro_queue_start(key_modification_sequence_t *sequence)
+{
+    if (sequence == NULL || s_pending_start_count >= MAX_KEY_MODIFICATION_SEQUENCE) {
+        return;
+    }
+    s_pending_starts[s_pending_start_count++] = sequence;
+}
+
+static void macro_flush_pending_starts(void)
+{
+    for (uint8_t i = 0; i < s_pending_start_count; i++) {
+        start_sequence(s_pending_starts[i]);
+    }
+    macro_pending_starts_clear();
+}
+
+/** Arm timer for step at `sequence->pos`; always stop before re-arm. */
+static void macro_arm_step_timer(key_modification_sequence_t *sequence, uint32_t delay_us)
+{
+    if (!sequence->timer) {
+        return;
+    }
+    esp_timer_stop(sequence->timer);
+    if (delay_us == 0) {
+        esp_timer_start_once(sequence->timer, 1);
+        return;
+    }
+    int64_t now = esp_timer_get_time();
+    sequence->waited_sum += (int64_t)delay_us;
+    int64_t target = sequence->started_time + sequence->waited_sum;
+    if (target > now) {
+        esp_timer_start_once(sequence->timer, (uint64_t)(target - now));
+    } else {
+        esp_timer_start_once(sequence->timer, macro_profile_catchup_delay_us(delay_us));
+    }
+}
+
+/** int16 step deltas; fallback to int8 in `event.mouse` for compile-time defaults. */
+static void macro_step_mouse_deltas(const key_modification_event_t *step, int16_t *x, int16_t *y,
+                                    int16_t *w, int16_t *p)
+{
+    *x = step->mouse_x;
+    *y = step->mouse_y;
+    *w = step->mouse_wheel;
+    *p = step->mouse_pan;
+    if (*x == 0 && *y == 0 && *w == 0 && *p == 0 && step->event.header == HEADER_HID_MOUSE) {
+        const hid_mouse_report_t *m = &step->event.event.mouse;
+        *x = (int16_t)m->x;
+        *y = (int16_t)m->y;
+        *w = (int16_t)m->wheel;
+        *p = (int16_t)m->pan;
+    }
+}
+
 static void macro_evaluate_press_modes(const hid_mouse_report_t *cur_m, const hid_mouse_report_t *prev_m,
                                        const hid_keyboard_report_t *cur_k, const hid_keyboard_report_t *prev_k)
 {
@@ -175,7 +237,7 @@ static void macro_try_start_press_mode(int started_idx, key_modification_sequenc
 #endif
     macro_reset_mode_set_peers(started_idx, sequence->mode_set);
     reset_sequence(sequence);
-    start_sequence(sequence);
+    macro_queue_start(sequence);
 }
 
 static SemaphoreHandle_t s_seq_mux;
@@ -300,6 +362,7 @@ void macro_posthook_transmission(hid_transmit_t* report){
                                          &last_mouse_report, &last_mouse_report);
 #endif
         macro_seq_mux_init();
+        macro_pending_starts_clear();
         xSemaphoreTake(s_seq_mux, portMAX_DELAY);
         macro_evaluate_press_modes(&last_mouse_report, &last_mouse_report, &last_keyboard_report[0],
                                    &last_keyboard_report[1]);
@@ -322,7 +385,7 @@ void macro_posthook_transmission(hid_transmit_t* report){
                 perf_stat_bump(PERF_MACRO_START);
 #endif
                 reset_sequence(sequence);
-                start_sequence(sequence);
+                macro_queue_start(sequence);
             }
             // If a recording sequence
             if (sequence->save_press.header == HEADER_HID_KEYBOARD && sequence->is_recording){
@@ -342,6 +405,7 @@ void macro_posthook_transmission(hid_transmit_t* report){
         }
         macro_press_sync_running_sequences();
         xSemaphoreGive(s_seq_mux);
+        macro_flush_pending_starts();
     // Case n°2: Mouse HID
     } else if (report->header == HEADER_HID_MOUSE){
         hid_mouse_report_t prev_mouse = last_mouse_report;
@@ -356,71 +420,74 @@ void macro_posthook_transmission(hid_transmit_t* report){
                                          &last_mouse_report);
 #endif
         macro_seq_mux_init();
+        macro_pending_starts_clear();
         xSemaphoreTake(s_seq_mux, portMAX_DELAY);
         macro_evaluate_press_modes(&last_mouse_report, &prev_mouse, &last_keyboard_report[0],
                                    &last_keyboard_report[1]);
         macro_press_sync_running_sequences();
         xSemaphoreGive(s_seq_mux);
+        macro_flush_pending_starts();
     }
 }
 
 void macro_sequence_callback(void* arg) {
-    // Get the key sequence from arguments
-    key_modification_sequence_t* key_seq = (key_modification_sequence_t*) arg;
+    key_modification_sequence_t *key_seq = (key_modification_sequence_t *)arg;
+
+    macro_seq_mux_init();
+    xSemaphoreTake(s_seq_mux, portMAX_DELAY);
+
     if (!macro_profile_macros_enabled()) {
         reset_sequence(key_seq);
+        xSemaphoreGive(s_seq_mux);
         return;
     }
-    hid_transmit_t macro_event = key_seq->list[key_seq->pos].event;
-    // Copy last humain HID report...
+    if (key_seq->pos >= key_seq->size) {
+        xSemaphoreGive(s_seq_mux);
+        return;
+    }
+
+    const uint8_t step_idx = key_seq->pos;
+    const key_modification_event_t *step_ev = &key_seq->list[step_idx];
+    hid_transmit_t macro_event = step_ev->event;
+
     hid_transmit_t copy_report;
-    if (macro_event.header == HEADER_HID_KEYBOARD){
+    if (macro_event.header == HEADER_HID_KEYBOARD) {
         copy_report.header = HEADER_HID_KEYBOARD;
         copy_report.event.keyboard = last_keyboard_report[0];
     } else if (macro_event.header == HEADER_HID_MOUSE) {
         copy_report.header = HEADER_HID_MOUSE;
         copy_report.event.mouse = last_mouse_report;
     } else {
-        #if DEBUG_LOG
-        ESP_LOGI(pcTaskGetName(NULL), "macro_sequence(): Invalid macro sequence n°%d (header: %d): %s", key_seq->pos, macro_event.header, key_seq->timer_args.name);
-        #endif
+#if DEBUG_LOG
+        ESP_LOGI(pcTaskGetName(NULL), "macro_sequence(): Invalid macro sequence n°%u (header: %d): %s",
+                 (unsigned)step_idx, macro_event.header, key_seq->timer_args.name);
+#endif
+        xSemaphoreGive(s_seq_mux);
         return;
     }
 
-    // ... and add the custom key to the sequence previous key.
     key_seq->previous_key = macro_event;
-    // Previous key of all sequence are added to copy report to send: all sequences can run in parallel
-    macro_seq_mux_init();
-    xSemaphoreTake(s_seq_mux, portMAX_DELAY);
-    for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++){
-        key_modification_sequence_t* sequence = &group_sequence.list[i];
-        // Ignore empty sequence
-        if (sequence->size == 0) continue;
-        // Skip sequence with not same HID type
-        if (sequence->previous_key.header != macro_event.header) continue;
-        // Add the keycode to report
+    for (int i = 0; i < MAX_KEY_MODIFICATION_SEQUENCE; i++) {
+        key_modification_sequence_t *sequence = &group_sequence.list[i];
+        if (sequence->size == 0) {
+            continue;
+        }
+        if (sequence->previous_key.header != macro_event.header) {
+            continue;
+        }
         add_event_to_report(&copy_report, sequence->previous_key);
     }
-    xSemaphoreGive(s_seq_mux);
+
     uint32_t step_delay_us = 0;
     bool step_delay_valid = false;
     if (macro_event.header == HEADER_HID_MOUSE) {
-        macro_profile_apply_mouse_jitter(&macro_event.event.mouse);
-        const hid_mouse_report_t *m = &macro_event.event.mouse;
-        uint32_t nominal_us = key_seq->list[key_seq->pos].duration;
-        /* Spread uses nominal step `us`; bullet timer uses jittered delay (no shared window). */
+        int16_t mx, my, mw, mp;
+        macro_step_mouse_deltas(step_ev, &mx, &my, &mw, &mp);
+        macro_profile_apply_mouse_step_jitter(&mx, &my);
+        const uint32_t nominal_us = step_ev->duration;
         step_delay_us = macro_profile_step_delay_us(nominal_us);
         step_delay_valid = true;
-        if (macro_profile_mouse_drip_interval_us() == 0) {
-            copy_report.event.mouse.x = 0;
-            copy_report.event.mouse.y = 0;
-            copy_report.event.mouse.wheel = 0;
-            copy_report.event.mouse.pan = 0;
-            set_mouse_movement_to_report(&copy_report.event.mouse, *m);
-            hid_add_report(copy_report);
-        } else {
-            hid_macro_feed_mouse_step(m->x, m->y, m->wheel, m->pan, nominal_us);
-        }
+        hid_macro_feed_mouse_step(mx, my, mw, mp, nominal_us);
 #if USB_OUTPUT_PERF_LOG_ENABLE
         perf_stat_bump(PERF_MACRO_TICK_MOUSE);
 #endif
@@ -428,62 +495,45 @@ void macro_sequence_callback(void* arg) {
 #if USB_OUTPUT_PERF_LOG_ENABLE
         perf_stat_bump(PERF_MACRO_TICK_KBD);
 #endif
-        #if DEBUG_LOG
+#if DEBUG_LOG
         ESP_LOGI(pcTaskGetName(NULL), "macro_sequence(): Send report from: %s", key_seq->timer_args.name);
-        #endif
+#endif
         hid_add_report(copy_report);
     }
 
-    // Schedule next sequence key with esp_timer
-    // Increase the sequence position
-    key_seq->pos++;
-    // if end of sequence, reset
-    if (key_seq->pos >= key_seq->size){
+    key_seq->pos = (uint8_t)(step_idx + 1);
+
+    if (key_seq->pos >= key_seq->size) {
         reset_sequence(key_seq);
-        if (key_seq->loop){
-            // Ignore end of sequence, try to continue
-        } else {
+        if (!key_seq->loop) {
+            xSemaphoreGive(s_seq_mux);
             return;
         }
+        step_delay_us = macro_profile_step_delay_us(step_ev->duration);
+        step_delay_valid = true;
     }
-    // ... else restart timer with next duration
-    // (but in a loop the press key must still be pressed)
+
     if (key_seq->loop && key_seq->event_press.header != 0 &&
         !mode_press_held(&last_mouse_report, &last_keyboard_report[0], key_seq)) {
         reset_sequence(key_seq);
+        xSemaphoreGive(s_seq_mux);
         return;
-    }  
-    if (step_delay_valid) {
-        start_sequence_with_delay(key_seq, step_delay_us);
-    } else {
-        start_sequence(key_seq);
     }
-    return;
+
+    if (step_delay_valid) {
+        macro_arm_step_timer(key_seq, step_delay_us);
+    } else {
+        macro_arm_step_timer(key_seq, 0);
+    }
+    xSemaphoreGive(s_seq_mux);
 }
 
 void start_sequence_with_delay(key_modification_sequence_t *sequence, uint32_t step_us)
 {
-    if (!sequence->timer) {
-        return;
-    }
-    /* step_us == 0: fire step at pos now (used by start_sequence after press/release). */
-    if (step_us == 0) {
-        esp_timer_start_once(sequence->timer, 1);
-        return;
-    }
-    int64_t now = esp_timer_get_time();
-    uint32_t nominal = sequence->list[sequence->pos].duration;
-    int64_t target = sequence->started_time + sequence->waited_sum + (int64_t)step_us;
-    sequence->waited_sum += step_us;
-    if (target > now) {
-        esp_timer_start_once(sequence->timer, (uint64_t)(target - now));
-    } else {
-        esp_timer_start_once(sequence->timer, macro_profile_catchup_delay_us(nominal));
-    }
+    macro_arm_step_timer(sequence, step_us);
 }
 
 void start_sequence(key_modification_sequence_t *sequence)
 {
-    /* Step 0 runs immediately; callback schedules list[0].us before step 1. */
-    start_sequence_with_delay(sequence, 0);
+    macro_arm_step_timer(sequence, 0);
 }

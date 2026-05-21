@@ -8,6 +8,11 @@
 typedef struct {
     unsigned int duration;
     hid_transmit_t event;
+    /** Per-step mouse deltas (int16 at parse); USB sends int8 slices via drip. */
+    int16_t mouse_x;
+    int16_t mouse_y;
+    int16_t mouse_wheel;
+    int16_t mouse_pan;
 } key_modification_event_t;
 
 typedef struct {

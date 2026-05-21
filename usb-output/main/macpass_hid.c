@@ -208,8 +208,34 @@ static void hid_macro_send_immediate_step(int8_t x, int8_t y, int8_t wheel, int8
     hid_queue_report(report);
 }
 
+static int8_t hid_take_axis_slice(int16_t *v)
+{
+    if (*v == 0) {
+        return 0;
+    }
+    int16_t slice;
+    if (*v > 127) {
+        slice = 127;
+    } else if (*v < -128) {
+        slice = -128;
+    } else {
+        slice = *v;
+    }
+    *v = (int16_t)(*v - slice);
+    return (int8_t)slice;
+}
 
-void hid_macro_feed_mouse_step(int8_t x, int8_t y, int8_t wheel, int8_t pan, uint32_t spread_us)
+/** Send full step when drip is off (may use multiple HID reports). */
+static void hid_macro_send_immediate_step16(int16_t x, int16_t y, int16_t wheel, int16_t pan)
+{
+    for (unsigned n = 0; n < 32u && (x != 0 || y != 0 || wheel != 0 || pan != 0); n++) {
+        hid_macro_send_immediate_step(hid_take_axis_slice(&x), hid_take_axis_slice(&y),
+                                      hid_take_axis_slice(&wheel), hid_take_axis_slice(&pan));
+    }
+}
+
+
+void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan, uint32_t spread_us)
 {
     if (x == 0 && y == 0 && wheel == 0 && pan == 0) {
         return;
@@ -217,7 +243,7 @@ void hid_macro_feed_mouse_step(int8_t x, int8_t y, int8_t wheel, int8_t pan, uin
 
 
     if (!hid_mouse_spread_enabled()) {
-        hid_macro_send_immediate_step(x, y, wheel, pan);
+        hid_macro_send_immediate_step16(x, y, wheel, pan);
         return;
     }
 

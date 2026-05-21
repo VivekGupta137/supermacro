@@ -115,6 +115,31 @@ void macro_profile_apply_mouse_jitter(hid_mouse_report_t *m)
     m->y = (int8_t)ny;
 }
 
+void macro_profile_apply_mouse_step_jitter(int16_t *x, int16_t *y)
+{
+    if (!s_humanize.enabled || s_humanize.mouse_jitter == 0 || x == NULL || y == NULL) {
+        return;
+    }
+    uint32_t j = s_humanize.mouse_jitter;
+    int dx = (int)(esp_random() % (2u * j + 1u)) - (int)j;
+    int dy = (int)(esp_random() % (2u * j + 1u)) - (int)j;
+    int nx = (int)*x + dx;
+    int ny = (int)*y + dy;
+    const int lim = MACRO_STEP_MOUSE_AXIS_MAX;
+    if (nx > lim) {
+        nx = lim;
+    } else if (nx < -lim) {
+        nx = -lim;
+    }
+    if (ny > lim) {
+        ny = lim;
+    } else if (ny < -lim) {
+        ny = -lim;
+    }
+    *x = (int16_t)nx;
+    *y = (int16_t)ny;
+}
+
 #if CONFIG_MACRO_WEB_UI
 #include <inttypes.h>
 
@@ -553,6 +578,17 @@ static int clamp_i32_to_i8(int v)
     return v;
 }
 
+static int clamp_i32_to_step_axis(int v)
+{
+    if (v > MACRO_STEP_MOUSE_AXIS_MAX) {
+        return MACRO_STEP_MOUSE_AXIS_MAX;
+    }
+    if (v < -MACRO_STEP_MOUSE_AXIS_MAX) {
+        return -MACRO_STEP_MOUSE_AXIS_MAX;
+    }
+    return v;
+}
+
 static bool fill_keyboard_event(hid_transmit_t *t, const cJSON *kbd)
 {
     t->header = HEADER_HID_KEYBOARD;
@@ -583,16 +619,15 @@ static bool fill_keyboard_event(hid_transmit_t *t, const cJSON *kbd)
     return true;
 }
 
-static void scale_hid_mouse_transmit(hid_transmit_t *ev, float scale)
+static void scale_mouse_step_deltas(key_modification_event_t *ev, float scale)
 {
-    if (scale == 1.f || ev->header != HEADER_HID_MOUSE) {
+    if (scale == 1.f || ev->event.header != HEADER_HID_MOUSE) {
         return;
     }
-    hid_mouse_report_t *m = &ev->event.mouse;
-    m->x = (int8_t)clamp_i32_to_i8((int)lroundf((float)m->x * scale));
-    m->y = (int8_t)clamp_i32_to_i8((int)lroundf((float)m->y * scale));
-    m->wheel = (int8_t)clamp_i32_to_i8((int)lroundf((float)m->wheel * scale));
-    m->pan = (int8_t)clamp_i32_to_i8((int)lroundf((float)m->pan * scale));
+    ev->mouse_x = (int16_t)clamp_i32_to_step_axis((int)lroundf((float)ev->mouse_x * scale));
+    ev->mouse_y = (int16_t)clamp_i32_to_step_axis((int)lroundf((float)ev->mouse_y * scale));
+    ev->mouse_wheel = (int16_t)clamp_i32_to_step_axis((int)lroundf((float)ev->mouse_wheel * scale));
+    ev->mouse_pan = (int16_t)clamp_i32_to_step_axis((int)lroundf((float)ev->mouse_pan * scale));
 }
 
 static bool fill_mouse_event(hid_transmit_t *t, const cJSON *mouse)
@@ -631,6 +666,41 @@ static bool step_has_removed_fields(const cJSON *step)
            cJSON_GetObjectItem(step, "segments") != NULL || cJSON_GetObjectItem(step, "humanize") != NULL;
 }
 
+/** Mouse step: buttons in `event`; movement in int16 fields (not int8-clamped at parse). */
+static bool fill_mouse_step(key_modification_event_t *ev, const cJSON *mouse)
+{
+    ev->mouse_x = 0;
+    ev->mouse_y = 0;
+    ev->mouse_wheel = 0;
+    ev->mouse_pan = 0;
+    ev->event.header = HEADER_HID_MOUSE;
+    memset(&ev->event.event.mouse, 0, sizeof(ev->event.event.mouse));
+    if (!mouse || !cJSON_IsObject(mouse)) {
+        return true;
+    }
+    const cJSON *b = cJSON_GetObjectItem(mouse, "b");
+    if (b && cJSON_IsNumber(b)) {
+        ev->event.event.mouse.buttons = (uint8_t)b->valuedouble;
+    }
+    const cJSON *x = cJSON_GetObjectItem(mouse, "x");
+    if (x && cJSON_IsNumber(x)) {
+        ev->mouse_x = (int16_t)clamp_i32_to_step_axis((int)x->valuedouble);
+    }
+    const cJSON *y = cJSON_GetObjectItem(mouse, "y");
+    if (y && cJSON_IsNumber(y)) {
+        ev->mouse_y = (int16_t)clamp_i32_to_step_axis((int)y->valuedouble);
+    }
+    const cJSON *w = cJSON_GetObjectItem(mouse, "w");
+    if (w && cJSON_IsNumber(w)) {
+        ev->mouse_wheel = (int16_t)clamp_i32_to_step_axis((int)w->valuedouble);
+    }
+    const cJSON *p = cJSON_GetObjectItem(mouse, "p");
+    if (p && cJSON_IsNumber(p)) {
+        ev->mouse_pan = (int16_t)clamp_i32_to_step_axis((int)p->valuedouble);
+    }
+    return true;
+}
+
 static bool fill_step(const cJSON *step, key_modification_event_t *ev)
 {
     if (!step || !cJSON_IsObject(step)) {
@@ -644,10 +714,14 @@ static bool fill_step(const cJSON *step, key_modification_event_t *ev)
         return false;
     }
     ev->duration = (unsigned int)us->valuedouble;
+    ev->mouse_x = 0;
+    ev->mouse_y = 0;
+    ev->mouse_wheel = 0;
+    ev->mouse_pan = 0;
     const cJSON *mouse = cJSON_GetObjectItem(step, "mouse");
     const cJSON *kbd = cJSON_GetObjectItem(step, "kbd");
     if (mouse) {
-        return fill_mouse_event(&ev->event, mouse);
+        return fill_mouse_step(ev, mouse);
     }
     if (kbd) {
         return fill_keyboard_event(&ev->event, kbd);
@@ -825,7 +899,7 @@ static bool parse_one_group(const cJSON *g, key_modification_sequence_t *seq, fl
             if (!fill_step(cJSON_GetArrayItem(steps, i), &seq->list[i])) {
                 return false;
             }
-            scale_hid_mouse_transmit(&seq->list[i].event, step_scale);
+            scale_mouse_step_deltas(&seq->list[i], step_scale);
         }
         seq->size = (uint8_t)nsteps;
     }
