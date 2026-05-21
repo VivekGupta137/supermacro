@@ -17,6 +17,7 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
+#include "cJSON.h"
 #include "macro_profile.h"
 #include "macpass_macro.h"
 #include "macro_ws.h"
@@ -76,6 +77,26 @@ static esp_err_t http_resp_err(httpd_req_t *req, httpd_err_code_t code, const ch
 {
     http_set_conn_close(req);
     return httpd_resp_send_err(req, code, msg);
+}
+
+static esp_err_t http_resp_json_err(httpd_req_t *req, httpd_err_code_t code, const char *err_msg)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return http_resp_err(req, code, err_msg);
+    }
+    cJSON_AddBoolToObject(root, "ok", 0);
+    cJSON_AddStringToObject(root, "error", err_msg != NULL ? err_msg : "error");
+    char *printed = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!printed) {
+        return http_resp_err(req, code, err_msg);
+    }
+    httpd_resp_set_type(req, "application/json");
+    http_set_conn_close(req);
+    esp_err_t ret = httpd_resp_send(req, printed, HTTPD_RESP_USE_STRLEN);
+    free(printed);
+    return ret;
 }
 
 static esp_err_t http_send_body_chunked(httpd_req_t *req, const char *data, size_t len)
@@ -731,7 +752,10 @@ static esp_err_t h_profile_post(httpd_req_t *req)
 {
     size_t len = req->content_len;
     if (len == 0 || len > (size_t)CONFIG_MACRO_PROFILE_MAX_SIZE) {
-        return http_resp_err(req, HTTPD_400_BAD_REQUEST, "bad length");
+        char msg[96];
+        snprintf(msg, sizeof(msg), "profile too large (%u bytes, max %d)", (unsigned)len,
+                 CONFIG_MACRO_PROFILE_MAX_SIZE);
+        return http_resp_json_err(req, HTTPD_400_BAD_REQUEST, msg);
     }
     char *body = malloc(len + 1);
     if (!body) {
@@ -754,9 +778,13 @@ static esp_err_t h_profile_post(httpd_req_t *req)
         return http_resp_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
     }
     if (!macro_profile_parse_json(body, tmp)) {
+        const char *detail = macro_profile_get_parse_error();
+        if (detail == NULL || detail[0] == '\0') {
+            detail = "invalid profile";
+        }
         free(tmp);
         free(body);
-        return http_resp_err(req, HTTPD_400_BAD_REQUEST, "invalid profile");
+        return http_resp_json_err(req, HTTPD_400_BAD_REQUEST, detail);
     }
 
     esp_err_t mnt = macro_profile_ensure_spiffs_mounted();
@@ -852,6 +880,40 @@ static esp_err_t h_next_script_post(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+static esp_err_t h_active_weapon_post(httpd_req_t *req)
+{
+    size_t len = req->content_len;
+    if (len > 32) {
+        len = 32;
+    }
+    char body[33] = {0};
+    if (len > 0) {
+        size_t got = 0;
+        while (got < len) {
+            int r = httpd_req_recv(req, body + got, len - got);
+            if (r <= 0) {
+                return http_resp_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "recv");
+            }
+            got += (size_t)r;
+        }
+        body[len] = '\0';
+    }
+    int idx = 0;
+    const char *colon = strchr(body, ':');
+    if (colon != NULL) {
+        idx = atoi(colon + 1);
+    } else if (body[0] != '\0') {
+        idx = atoi(body);
+    }
+    if (idx < 0) {
+        idx = 0;
+    }
+    macro_profile_http_set_active_weapon((uint8_t)idx);
+    httpd_resp_set_type(req, "application/json");
+    http_set_conn_close(req);
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
 static esp_err_t h_toggle_macros_post(httpd_req_t *req)
 {
     (void)req;
@@ -932,6 +994,7 @@ static void http_server_start(void)
     httpd_uri_t u_prof = {.uri = "/api/profile", .method = HTTP_POST, .handler = h_profile_post, .user_ctx = NULL};
     httpd_uri_t u_prof_get = {.uri = "/api/profile", .method = HTTP_GET, .handler = h_profile_get, .user_ctx = NULL};
     httpd_uri_t u_next = {.uri = "/api/next-script", .method = HTTP_POST, .handler = h_next_script_post, .user_ctx = NULL};
+    httpd_uri_t u_weapon = {.uri = "/api/active-weapon", .method = HTTP_POST, .handler = h_active_weapon_post, .user_ctx = NULL};
     httpd_uri_t u_tog = {.uri = "/api/toggle-macros", .method = HTTP_POST, .handler = h_toggle_macros_post, .user_ctx = NULL};
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_root));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_fav));
@@ -944,6 +1007,7 @@ static void http_server_start(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_prof));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_prof_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_next));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_weapon));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_tog));
 #if CONFIG_HTTPD_WS_SUPPORT
     httpd_uri_t u_ws = {.uri = "/ws", .method = HTTP_GET, .handler = macro_ws_handler, .user_ctx = NULL,

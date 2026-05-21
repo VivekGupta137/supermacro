@@ -1,5 +1,6 @@
 set(srcs
     "main.c"
+    "app_startup.c"
     "usb_identity.c"
     "macpass_hid.c"
     "macpass_spi.c"

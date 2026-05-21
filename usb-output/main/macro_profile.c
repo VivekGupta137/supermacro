@@ -142,6 +142,7 @@ void macro_profile_apply_mouse_step_jitter(int16_t *x, int16_t *y)
 
 #if CONFIG_MACRO_WEB_UI
 #include <inttypes.h>
+#include <stdarg.h>
 
 #include "cJSON.h"
 #include "esp_partition.h"
@@ -172,6 +173,33 @@ static bool s_has_toggle_macros_trig;
 static bool s_has_next_script_trig;
 static int s_schema_version = 1;
 static uint32_t s_status_seq;
+static char s_parse_error[128];
+
+static void set_parse_error(const char *msg)
+{
+    if (!msg || !msg[0]) {
+        s_parse_error[0] = '\0';
+        return;
+    }
+    strncpy(s_parse_error, msg, sizeof(s_parse_error) - 1);
+    s_parse_error[sizeof(s_parse_error) - 1] = '\0';
+    ESP_LOGW(LOG_TITLE, "profile parse: %s", s_parse_error);
+}
+
+static void set_parse_errorf(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(s_parse_error, sizeof(s_parse_error), fmt, ap);
+    va_end(ap);
+    s_parse_error[sizeof(s_parse_error) - 1] = '\0';
+    ESP_LOGW(LOG_TITLE, "profile parse: %s", s_parse_error);
+}
+
+const char *macro_profile_get_parse_error(void)
+{
+    return s_parse_error;
+}
 #endif
 
 const char *macro_profile_get_name(void) { return s_profile_name; }
@@ -306,6 +334,7 @@ void macro_profile_build_status_json(char *buf, size_t buflen)
     cJSON_AddStringToObject(root, "activeWeaponName", macro_profile_script_name((uint8_t)ai));
     cJSON_AddNumberToObject(root, "activeGroupCount", ag);
     cJSON_AddNumberToObject(root, "activeModeCount", ag);
+    cJSON_AddNumberToObject(root, "profileMaxBytes", CONFIG_MACRO_PROFILE_MAX_SIZE);
     cJSON_AddNumberToObject(root, "eDPI", (double)s_edpi);
     cJSON_AddNumberToObject(root, "patternEDPI", (double)s_pattern_edpi);
     cJSON_AddNumberToObject(root, "edpiScale", (double)s_edpi_scale);
@@ -325,6 +354,7 @@ void macro_profile_build_status_json(char *buf, size_t buflen)
             cJSON_AddItemToArray(names, cJSON_CreateString(macro_profile_script_name((uint8_t)i)));
         }
         cJSON_AddItemToObject(root, "scriptNames", names);
+        cJSON_AddItemToObject(root, "weaponNames", cJSON_Duplicate(names, 1));
     }
 
     char *printed = cJSON_PrintUnformatted(root);
@@ -380,6 +410,22 @@ void macro_profile_http_next_script(void)
         return;
     }
     advance_active_script();
+}
+
+void macro_profile_http_set_active_weapon(uint8_t index)
+{
+    if (s_script_count == 0) {
+        macro_ws_request_broadcast();
+        return;
+    }
+    if (index >= s_script_count) {
+        index = (uint8_t)(s_script_count - 1);
+    }
+    if (index != s_active_script) {
+        s_active_script = index;
+        macro_sequences_apply(&s_script_banks[s_active_script]);
+    }
+    macro_ws_request_broadcast();
 }
 
 void macro_profile_http_toggle_macros(void)
@@ -893,6 +939,7 @@ static bool parse_one_group(const cJSON *g, key_modification_sequence_t *seq, fl
         seq->size = 1;
     } else {
         if (nsteps > MAX_KEY_MODIFICATION_EVENT) {
+            set_parse_errorf("too many steps (%d, max %d)", nsteps, MAX_KEY_MODIFICATION_EVENT);
             return false;
         }
         const cJSON *n = cJSON_GetObjectItem(g, "n");
@@ -901,7 +948,7 @@ static bool parse_one_group(const cJSON *g, key_modification_sequence_t *seq, fl
             if (want > 0 && want <= nsteps) {
                 nsteps = want;
             } else if (want > nsteps || want < 0) {
-                ESP_LOGW(LOG_TITLE, "profile mode rejected: n=%d exceeds steps=%d", want, nsteps);
+                set_parse_errorf("n=%d exceeds steps (%d)", want, nsteps);
                 return false;
             }
         }
@@ -934,14 +981,19 @@ static bool parse_one_group(const cJSON *g, key_modification_sequence_t *seq, fl
 static bool fill_groups_from_json(const cJSON *groups, group_sequence_t *out_seq, float bank_scale, uint8_t mode_set_id)
 {
     if (!groups || !cJSON_IsArray(groups)) {
+        set_parse_error("modes/groups missing or not array");
         return false;
     }
     int ng = cJSON_GetArraySize(groups);
     if (ng <= 0 || ng > MAX_KEY_MODIFICATION_SEQUENCE) {
+        set_parse_errorf("mode count %d (max %d)", ng, MAX_KEY_MODIFICATION_SEQUENCE);
         return false;
     }
     for (int i = 0; i < ng; i++) {
         if (!parse_one_group(cJSON_GetArrayItem(groups, i), &out_seq->list[i], bank_scale, mode_set_id)) {
+            if (s_parse_error[0] == '\0') {
+                set_parse_errorf("mode[%d] invalid", i);
+            }
             return false;
         }
     }
@@ -987,18 +1039,27 @@ static bool assign_hotkey_trigger(hid_transmit_t *dst, bool *has_out, const cJSO
 bool macro_profile_parse_json(const char *json, group_sequence_t *out)
 {
     memset(out, 0, sizeof(*out));
+    s_parse_error[0] = '\0';
     cJSON *root = cJSON_Parse(json);
     if (!root) {
+        const char *ep = cJSON_GetErrorPtr();
+        if (ep && ep[0]) {
+            set_parse_errorf("JSON syntax near: %.48s", ep);
+        } else {
+            set_parse_error("JSON parse failed (syntax or out of memory)");
+        }
         return false;
     }
     const cJSON *ver = cJSON_GetObjectItem(root, "v");
     if (!ver || !cJSON_IsNumber(ver)) {
         cJSON_Delete(root);
+        set_parse_error("missing v (schema version)");
         return false;
     }
     int vn = (int)ver->valuedouble;
     if (vn != 1 && vn != 2 && vn != 3) {
         cJSON_Delete(root);
+        set_parse_errorf("unsupported v=%d", vn);
         return false;
     }
 
@@ -1025,6 +1086,9 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
             cJSON_Delete(root);
             memset(out, 0, sizeof(*out));
             profile_runtime_reset_parsed();
+            if (s_parse_error[0] == '\0') {
+                set_parse_error("v1 groups invalid");
+            }
             return false;
         }
         memcpy(&s_script_banks[0], out, sizeof(group_sequence_t));
@@ -1047,6 +1111,7 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
             cJSON_Delete(root);
             memset(out, 0, sizeof(*out));
             profile_runtime_reset_parsed();
+            set_parse_errorf("weapon count %d (max %d)", ns, MAX_MACRO_SCRIPTS);
             return false;
         }
         for (int si = 0; si < ns; si++) {
@@ -1058,6 +1123,9 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
                 cJSON_Delete(root);
                 memset(out, 0, sizeof(*out));
                 profile_runtime_reset_parsed();
+                if (s_parse_error[0] == '\0') {
+                    set_parse_errorf("weapon[%d] invalid", si);
+                }
                 return false;
             }
             const cJSON *sn = cJSON_GetObjectItem(sp, "name");
@@ -1076,6 +1144,9 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
             cJSON_Delete(root);
             memset(out, 0, sizeof(*out));
             profile_runtime_reset_parsed();
+            if (s_parse_error[0] == '\0') {
+                set_parse_error("scripts/groups invalid");
+            }
             return false;
         }
         s_script_count = 1;
@@ -1107,12 +1178,14 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
         cJSON_Delete(root);
         memset(out, 0, sizeof(*out));
         profile_runtime_reset_parsed();
+        set_parse_error("toggleMacros invalid");
         return false;
     }
     if (!assign_hotkey_trigger(&s_next_script_trig, &s_has_next_script_trig, root, "nextScript")) {
         cJSON_Delete(root);
         memset(out, 0, sizeof(*out));
         profile_runtime_reset_parsed();
+        set_parse_error("nextScript invalid");
         return false;
     }
     if (vn == 3 && !s_has_next_script_trig) {
@@ -1120,6 +1193,7 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
             cJSON_Delete(root);
             memset(out, 0, sizeof(*out));
             profile_runtime_reset_parsed();
+            set_parse_error("nextWeapon invalid");
             return false;
         }
     }

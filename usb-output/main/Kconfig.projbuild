@@ -94,8 +94,10 @@ menu "Macro profile / web UI"
 
         config MACRO_PROFILE_MAX_SIZE
             int "Max profile JSON size (bytes)"
-            default 65536
+            default 131072
             range 4096 1048576
+            help
+                Large multi-weapon Rust/CS profiles are often 70–90 KB. Increase if uploads fail with "profile too large".
 
     endmenu
 

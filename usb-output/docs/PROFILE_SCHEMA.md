@@ -64,7 +64,7 @@ Profile JSON  →  parse at boot / upload  →  group_sequence in RAM  →  esp_
 | Steps per group / mode | **100** (`MAX_KEY_MODIFICATION_EVENT`) |
 | `n` vs `steps` | **`n` must be ≤ `steps.length`** (strict: if `n` > step count, upload/parse fails) |
 | Weapon / script banks (v2/v3) | **4** (`MAX_MACRO_SCRIPTS`) |
-| Profile file size | Menuconfig `CONFIG_MACRO_PROFILE_MAX_SIZE` |
+| Profile file size | Menuconfig `CONFIG_MACRO_PROFILE_MAX_SIZE` (default **131072** / 128 KB) |
 
 **Dense prefix rule:** Groups are stored in array order `list[0]`, `list[1]`, … Firmware stops at the **first entry with `size == 0`**. Do not leave empty gaps between used groups.
 
@@ -200,7 +200,8 @@ Without a `humanize` block, firmware still spreads at **8 ms** (`HID_MOUSE_DRIP_
 |-------|------|----------|---------|-------------|
 | `steps` | array | no | one neutral step | Timed HID events (see above). |
 | `n` | number | no | all steps | Use only the first `n` steps (`1` ≤ `n` ≤ length of `steps`). |
-| `loop` | bool | no | `false` | If `true`, restart from step 0 while the `press` chord remains held. |
+| `loop` | bool | no | `false` | If `true`, restart from step 0 while the `press` chord remains held (`triggerMode: "hold"` only). |
+| `triggerMode` | string | no | `"hold"` | `"hold"` = run while `press` is held (default). `"tap"` = one full sequence per press; release does not stop mid-run. |
 | `press` | object | no | none | Start sequence on **rising edge** of this chord (see [Triggers](#triggers-and-matching)). |
 | `release` | object | no | none | **Keyboard only:** start on release edge of chord. |
 | `save` | object | no | none | **Keyboard only:** enter recording mode for this group (advanced). |
@@ -212,8 +213,32 @@ Without a `humanize` block, firmware still spreads at **8 ms** (`HID_MOUSE_DRIP_
 
 1. **Start:** `press` chord appears (rising edge) → sequence resets and timer starts at step 0.
 2. **Each tick:** Current step’s `mouse` / `kbd` is sent; timer schedules next step after `us`.
-3. **Loop:** After the last step, if `loop: true` and `press` still held → step 0 again.
-4. **Stop:** If `loop: true` and `press` no longer held → sequence resets and timer stops.
+3. **Loop (hold):** After the last step, if `loop: true`, `triggerMode` is `"hold"` (default), and `press` still held → step 0 again.
+4. **Stop (hold):** If `loop: true` and `press` no longer held → sequence resets and timer stops.
+
+### Tap vs hold (`triggerMode`)
+
+| `triggerMode` | Use case | Behaviour |
+|---------------|----------|-----------|
+| `"hold"` (default) | Full-auto recoil (AK, LR300 sustained) | Sequence stops when you release the `press` chord. `loop: true` repeats while held. |
+| `"tap"` | Burst (LR300), semi-auto (SAR, pistol) | One press runs **all** steps once; releasing the button does **not** cancel mid-sequence. Each new press (rising edge) starts again. `loop` is ignored — always one pass per tap. |
+
+Burst / semi-auto example:
+
+```json
+{
+  "name": "burst",
+  "triggerMode": "tap",
+  "loop": false,
+  "press": { "mouse": { "b": 1 } },
+  "n": 3,
+  "steps": [
+    { "us": 120000, "mouse": { "x": 0, "y": 4 } },
+    { "us": 120000, "mouse": { "x": 0, "y": 5 } },
+    { "us": 120000, "mouse": { "x": -1, "y": 4 } }
+  ]
+}
+```
 
 ### What gets sent on mouse macros
 
@@ -734,6 +759,7 @@ All [shared group fields](#group--mode-fields-all-versions), plus:
 |-------|------|---------|-------------|
 | `modeScale` | number | `1` | Per-mode multiplier (hipfire vs ADS tuning). Alias: `scale` on the same object (`modeScale` wins if both set). |
 | `pressMode` | string | `"chord"` | `"chord"` or `"exact"` (see [Triggers](#triggers-and-matching)). |
+| `triggerMode` | string | `"hold"` | `"hold"` or `"tap"` (see [Tap vs hold](#tap-vs-hold-triggermode)). |
 | `modeSet` | number | weapon index + 1 | Modes with the same id stop peers when one starts. Override only if you know you need cross-weapon grouping. |
 
 ### Complete v3 example — Rust AK hipfire + ADS

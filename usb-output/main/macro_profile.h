@@ -47,9 +47,15 @@ void macro_profile_try_action_hotkeys(const hid_keyboard_report_t *prev_k,
 
 bool macro_profile_parse_json(const char *json, group_sequence_t *out);
 esp_err_t macro_profile_ensure_spiffs_mounted(void);
+#if CONFIG_MACRO_WEB_UI
+/** Last failure from macro_profile_parse_json (empty if none). */
+const char *macro_profile_get_parse_error(void);
+#endif
 
 /** Same as physical `nextScript` hotkey: advance active script bank (no-op if only one script). */
 void macro_profile_http_next_script(void);
+/** Select active weapon/script bank by index (clamped). */
+void macro_profile_http_set_active_weapon(uint8_t index);
 /** Same as physical `toggleMacros` hotkey: flip global macro output on/off. */
 void macro_profile_http_toggle_macros(void);
 #endif
