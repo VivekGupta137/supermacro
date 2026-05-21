@@ -855,6 +855,16 @@ static bool parse_press_exact_flag(const cJSON *g)
     return false;
 }
 
+/** "hold" (default): repeat while press held when loop:true. "tap": one full sequence per press. */
+static bool parse_trigger_mode_tap(const cJSON *g)
+{
+    const cJSON *tm = cJSON_GetObjectItem(g, "triggerMode");
+    if (tm && cJSON_IsString(tm) && tm->valuestring) {
+        return strcmp(tm->valuestring, "tap") == 0;
+    }
+    return false;
+}
+
 static uint8_t parse_mode_set_field(const cJSON *g, uint8_t bank_default)
 {
     const cJSON *ms = cJSON_GetObjectItem(g, "modeSet");
@@ -916,6 +926,7 @@ static bool parse_one_group(const cJSON *g, key_modification_sequence_t *seq, fl
         return false;
     }
     seq->press_exact = parse_press_exact_flag(g);
+    seq->press_tap = parse_trigger_mode_tap(g);
     seq->mode_set = parse_mode_set_field(g, default_mode_set);
     return true;
 }

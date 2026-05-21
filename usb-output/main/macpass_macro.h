@@ -32,6 +32,8 @@ typedef struct {
     float mouse_scale;
     /** v3: true = button mask must match exactly (LMB-only vs LMB+RMB). */
     bool press_exact;
+    /** true = run full sequence on press rising edge; release does not stop mid-run. */
+    bool press_tap;
     /** v3: peers with same non-zero set stop each other when a new mode starts. */
     uint8_t mode_set;
 

@@ -132,6 +132,9 @@ static void macro_press_sync_running_sequences(void)
         if (seq->event_press.header == 0 && !seq->press_mouse_required && !seq->press_kbd_required) {
             continue;
         }
+        if (seq->press_tap) {
+            continue;
+        }
         if (!mode_press_held(&last_mouse_report, &last_keyboard_report[0], seq)) {
             reset_sequence(seq);
         }
@@ -505,7 +508,7 @@ void macro_sequence_callback(void* arg) {
 
     if (key_seq->pos >= key_seq->size) {
         reset_sequence(key_seq);
-        if (!key_seq->loop) {
+        if (!key_seq->loop || key_seq->press_tap) {
             xSemaphoreGive(s_seq_mux);
             return;
         }
@@ -513,7 +516,7 @@ void macro_sequence_callback(void* arg) {
         step_delay_valid = true;
     }
 
-    if (key_seq->loop && key_seq->event_press.header != 0 &&
+    if (key_seq->loop && !key_seq->press_tap && key_seq->event_press.header != 0 &&
         !mode_press_held(&last_mouse_report, &last_keyboard_report[0], key_seq)) {
         reset_sequence(key_seq);
         xSemaphoreGive(s_seq_mux);
