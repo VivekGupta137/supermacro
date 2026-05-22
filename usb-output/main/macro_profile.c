@@ -363,6 +363,10 @@ void macro_profile_build_status_json(char *buf, size_t buflen)
         buf[0] = '\0';
         return;
     }
+    size_t plen = strlen(printed);
+    if (plen >= buflen) {
+        ESP_LOGW("macro_profile", "status JSON truncated (%u bytes, max %u)", (unsigned)plen, (unsigned)buflen);
+    }
     strncpy(buf, printed, buflen - 1);
     buf[buflen - 1] = '\0';
     free(printed);

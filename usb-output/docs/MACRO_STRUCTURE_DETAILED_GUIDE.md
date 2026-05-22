@@ -148,10 +148,11 @@ Sketch:
 
 ## Pattern B: Burst fire tap sequence
 
-Use non-loop sequence with multiple press/release-style key or mouse states over time.
+Use `"triggerMode": "tap"` with `"loop": false` and a finite `steps` list (optionally trim with `"n"`).
 
 Why:
 
+- One click runs the full recoil burst (LR300) or one semi-auto correction (SAR/pistol); release does not cancel mid-sequence.
 - Deterministic finite output each trigger.
 
 ## Pattern C: Two weapon families (v2 scripts)

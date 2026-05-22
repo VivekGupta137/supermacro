@@ -24,6 +24,8 @@ void macro_profile_sync_active_group_scales(const group_sequence_t *gs);
 uint8_t macro_profile_script_count(void);
 uint8_t macro_profile_active_script_index(void);
 const char *macro_profile_script_name(uint8_t index);
+/** Status JSON for /api/status and WebSocket push (weapon names, mode scales, etc.). */
+#define MACRO_PROFILE_STATUS_JSON_MAX 4096
 void macro_profile_build_status_json(char *buf, size_t buflen);
 
 /** Next bullet timer delay (nominal step `us` + timingPct/jitterUs when humanize enabled). */

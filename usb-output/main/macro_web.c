@@ -697,7 +697,7 @@ static esp_err_t h_ping_get(httpd_req_t *req)
 
 static esp_err_t h_status_get(httpd_req_t *req)
 {
-    char buf[2048];
+    char buf[MACRO_PROFILE_STATUS_JSON_MAX];
     macro_profile_build_status_json(buf, sizeof(buf));
     httpd_resp_set_type(req, "application/json");
     http_set_conn_close(req);

@@ -32,7 +32,7 @@ static volatile bool s_broadcast_stale;
 
 struct macro_ws_broadcast_work {
     httpd_handle_t hd;
-    char json[2048];
+    char json[MACRO_PROFILE_STATUS_JSON_MAX];
 };
 
 static void macro_ws_unregister_fd_locked(int fd)

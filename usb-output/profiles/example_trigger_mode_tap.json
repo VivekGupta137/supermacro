@@ -1,0 +1,59 @@
+{
+  "v": 1,
+  "name": "trigger-mode-tap-test",
+  "macrosOn": true,
+  "eDPI": 800,
+  "patternEDPI": 800,
+  "toggleMacros": { "mouse": { "b": 16 } },
+  "groups": [
+    {
+      "comment": "HOLD (default): hold LMB — pull down repeats; stops when you release.",
+      "name": "hold-lmb",
+      "triggerMode": "hold",
+      "loop": true,
+      "press": { "mouse": { "b": 1 } },
+      "n": 2,
+      "steps": [
+        { "us": 80000, "mouse": { "x": 0, "y": 4 } },
+        { "us": 80000, "mouse": { "x": 0, "y": 4 } }
+      ]
+    },
+    {
+      "comment": "TAP burst: click RMB once — four-step zigzag runs to the end even if you release immediately.",
+      "name": "tap-burst-rmb",
+      "triggerMode": "tap",
+      "loop": false,
+      "press": { "mouse": { "b": 2 } },
+      "n": 4,
+      "steps": [
+        { "us": 100000, "mouse": { "x": 0, "y": 6 } },
+        { "us": 100000, "mouse": { "x": 4, "y": 4 } },
+        { "us": 100000, "mouse": { "x": 0, "y": 2 } },
+        { "us": 100000, "mouse": { "x": -4, "y": 0 } }
+      ]
+    },
+    {
+      "comment": "TAP semi: click middle (b:4) — one small pull per tap (pistol / SAR style).",
+      "name": "tap-semi-middle",
+      "triggerMode": "tap",
+      "loop": false,
+      "press": { "mouse": { "b": 4 } },
+      "steps": [
+        { "us": 50000, "mouse": { "x": 0, "y": 3 } }
+      ]
+    },
+    {
+      "comment": "TAP + loop ignored: side forward (b:16) — still only one 3-step pass per click.",
+      "name": "tap-side-one-pass",
+      "triggerMode": "tap",
+      "loop": true,
+      "press": { "mouse": { "b": 32 } },
+      "n": 3,
+      "steps": [
+        { "us": 90000, "mouse": { "x": -3, "y": 0 } },
+        { "us": 90000, "mouse": { "x": 6, "y": 0 } },
+        { "us": 90000, "mouse": { "x": -3, "y": 0 } }
+      ]
+    }
+  ]
+}
