@@ -63,7 +63,7 @@ Profile JSON  →  parse at boot / upload  →  group_sequence in RAM  →  esp_
 | Groups / modes per active bank | **10** (`MAX_KEY_MODIFICATION_SEQUENCE`) |
 | Steps per group / mode | **100** (`MAX_KEY_MODIFICATION_EVENT`) |
 | `n` vs `steps` | **`n` must be ≤ `steps.length`** (strict: if `n` > step count, upload/parse fails) |
-| Weapon / script banks (v2/v3) | **4** (`MAX_MACRO_SCRIPTS`) |
+| Weapon / script banks (v2/v3) | **10** (`MAX_MACRO_SCRIPTS`) |
 | Profile file size | Menuconfig `CONFIG_MACRO_PROFILE_MAX_SIZE` (default **131072** / 128 KB) |
 
 **Dense prefix rule:** Groups are stored in array order `list[0]`, `list[1]`, … Firmware stops at the **first entry with `size == 0`**. Do not leave empty gaps between used groups.
