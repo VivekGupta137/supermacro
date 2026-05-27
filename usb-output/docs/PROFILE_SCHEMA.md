@@ -299,6 +299,72 @@ They are only redundant when **your sens equals the author’s** (e.g. both 800)
 
 All layers **multiply**. Example: `800/800 × 1.0 × 0.85` (ADS `modeScale`) = **0.85×** on that mode only.
 
+### Game custom properties
+
+`customprops` is an optional root object used for per-game tuning.
+
+```json
+"customprops": {
+  "fov": 90,
+  "ads-sens": 1.0
+}
+```
+
+If `customprops` is missing (or invalid for the selected game), firmware keeps the default flow.
+
+### Activation rules
+
+`customprops` activates only when all are true:
+
+1. `game` matches a supported game handler.
+2. `customprops` exists and is an object.
+3. Required fields for that game are present and valid.
+
+Otherwise:
+
+- no custom game multiplier is applied,
+- runtime behavior falls back to normal eDPI/weapon/mode scaling,
+- status field `customPropsActive` is `false`.
+
+### Supported games
+
+| Game | Support status | Effect when `customprops` valid |
+|------|----------------|----------------------------------|
+| `rust` | **Supported** | Adds Rust-specific custom multiplier before weapon/mode scaling. |
+| `cs2` | Not implemented yet | Ignored for now (`customPropsActive=false`). |
+| Any other value | Not implemented yet | Ignored for now (`customPropsActive=false`). |
+
+### Rust customprops
+
+Use when `game` is `"rust"`.
+
+#### Fields
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `fov` | number | yes | Must be `> 0`. |
+| `ads-sens` | number | yes | Must be `> 0`. Aliases accepted: `adsSens`, `ads_sens`. |
+
+#### Impact
+
+When both fields are valid, firmware applies:
+
+```text
+rustCustomScale = (1.0 * 90.0) / (adsSens * fov)
+finalScale = edpiScale × rustCustomScale × weaponScale × modeScale
+```
+
+- Higher `ads-sens` => lower recoil multiplier.
+- Higher `fov` => lower recoil multiplier.
+- Lower `ads-sens` or lower `fov` => stronger recoil multiplier.
+
+### CS2 customprops (placeholder)
+
+`game: "cs2"` is reserved for future add-on support, but no CS2-specific `customprops` fields are consumed yet.
+
+- Current behavior: `customprops` is ignored for CS2.
+- Keep game-specific values only as metadata until CS2 handler is added.
+
 ---
 
 ## HID keymaps (mouse & keyboard)
@@ -563,6 +629,7 @@ Single flat list of macro groups. All groups are **active** at once (up to 10).
 | `v` | number | **yes** | Must be `1`. |
 | `name` | string | no | Shown as `profile` in status. |
 | `game` | string | no | Optional game label (`"rust"`, `"cs2"`, etc.), shown as `game` in status/UI. |
+| `customprops` | object | no | Optional per-game custom tuning (see [Game custom properties](#game-custom-properties)). |
 | `groups` | array | **yes** | Macro groups (see [shared fields](#group--mode-fields-all-versions)). |
 | `eDPI` | number | no | Your eDPI (see [scaling](#sensitivity-scaling-edpi)). |
 | `patternEDPI` | number | no | Author reference eDPI (default `800`). |
@@ -637,6 +704,7 @@ Supports multiple script banks (weapons), **one active bank** at a time, and opt
 | `v` | number | **yes** | — | Must be `2`. |
 | `name` | string | no | `"flash"` | Profile display name. |
 | `game` | string | no | `""` | Optional game label for grouping. |
+| `customprops` | object | no | — | Optional per-game custom tuning (see [Game custom properties](#game-custom-properties)). |
 | `scripts` | array | yes* | — | Weapon banks (no fixed max). *Required unless root `groups` is used. |
 | `groups` | array | yes* | — | Single-bank shortcut (same as one script with these groups). |
 | `activeScript` | number | no | `0` | Index into `scripts` loaded at boot (0-based). |
@@ -876,6 +944,7 @@ All [shared group fields](#group--mode-fields-all-versions), plus:
 | `schemaVer` | `1`, `2`, or `3` from profile `v`. |
 | `profile` | Profile `name`. |
 | `game` | Profile `game` (empty when unset). |
+| `customPropsActive` | `true` only when game-specific `customprops` are parsed and applied. |
 | `fw` | ESP-IDF version string. |
 | `macrosOn` | Global macro output enabled. |
 | `eDPI` | Parsed user eDPI (`0` if unset). |

@@ -159,6 +159,8 @@ static bool s_additive_mouse = false;
 static float s_edpi = 0.f;
 static float s_pattern_edpi = 800.f;
 static float s_edpi_scale = 1.f;
+static float s_game_custom_scale = 1.f;
+static bool s_customprops_active = false;
 static float s_seq_scale[MAX_KEY_MODIFICATION_SEQUENCE];
 #if CONFIG_MACRO_WEB_UI
 #define MAX_SCRIPT_NAME_LEN MACRO_PROFILE_NAME_CAP
@@ -479,6 +481,7 @@ void macro_profile_build_status_json(char *buf, size_t buflen)
     cJSON_AddStringToObject(root, "fw", fw);
     cJSON_AddStringToObject(root, "profile", macro_profile_get_name());
     cJSON_AddStringToObject(root, "game", macro_profile_get_game());
+    cJSON_AddBoolToObject(root, "customPropsActive", s_customprops_active);
     cJSON_AddBoolToObject(root, "macrosOn", s_macros_enabled);
     cJSON_AddNumberToObject(root, "activeScript", ai);
     cJSON_AddNumberToObject(root, "activeWeapon", ai);
@@ -701,6 +704,8 @@ static void profile_runtime_reset_parsed(void)
     s_edpi = 0.f;
     s_pattern_edpi = 800.f;
     s_edpi_scale = 1.f;
+    s_game_custom_scale = 1.f;
+    s_customprops_active = false;
     macro_profile_sync_active_group_scales(NULL);
     s_has_toggle_macros_trig = false;
     s_has_next_script_trig = false;
@@ -1027,6 +1032,76 @@ static float json_mode_scale_or_one(const cJSON *mode)
     return (s > 0.f) ? s : 1.f;
 }
 
+static bool streq_ci(const char *a, const char *b)
+{
+    if (!a || !b) {
+        return false;
+    }
+    while (*a && *b) {
+        char ca = *a;
+        char cb = *b;
+        if (ca >= 'A' && ca <= 'Z') {
+            ca = (char)(ca - 'A' + 'a');
+        }
+        if (cb >= 'A' && cb <= 'Z') {
+            cb = (char)(cb - 'A' + 'a');
+        }
+        if (ca != cb) {
+            return false;
+        }
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static const cJSON *customprops_ads_sens_field(const cJSON *customprops)
+{
+    const cJSON *ads = cJSON_GetObjectItem(customprops, "ads-sens");
+    if (ads && cJSON_IsNumber(ads)) {
+        return ads;
+    }
+    ads = cJSON_GetObjectItem(customprops, "adsSens");
+    if (ads && cJSON_IsNumber(ads)) {
+        return ads;
+    }
+    ads = cJSON_GetObjectItem(customprops, "ads_sens");
+    if (ads && cJSON_IsNumber(ads)) {
+        return ads;
+    }
+    return NULL;
+}
+
+static void parse_profile_customprops(const cJSON *root)
+{
+    s_game_custom_scale = 1.f;
+    s_customprops_active = false;
+    if (!streq_ci(s_profile_game, "rust")) {
+        return;
+    }
+    const cJSON *customprops = cJSON_GetObjectItem(root, "customprops");
+    if (!customprops || !cJSON_IsObject(customprops)) {
+        return;
+    }
+    const cJSON *fov = cJSON_GetObjectItem(customprops, "fov");
+    const cJSON *ads = customprops_ads_sens_field(customprops);
+    if (!fov || !cJSON_IsNumber(fov) || fov->valuedouble <= 0.0 || !ads || ads->valuedouble <= 0.0) {
+        return;
+    }
+    /* Rust custom props (same sensitivity relation as reference script):
+     * shot_scale is inversely proportional to adsSens * fov. */
+    const float fov_v = (float)fov->valuedouble;
+    const float ads_v = (float)ads->valuedouble;
+    float scale = (1.0f * 90.0f) / (ads_v * fov_v);
+    if (scale < 0.05f) {
+        scale = 0.05f;
+    } else if (scale > 20.0f) {
+        scale = 20.0f;
+    }
+    s_game_custom_scale = scale;
+    s_customprops_active = true;
+}
+
 static void parse_profile_edpi(const cJSON *root)
 {
     float user = 0.f;
@@ -1087,7 +1162,7 @@ static bool parse_one_group(const cJSON *g, key_modification_sequence_t *seq, fl
     if (steps && cJSON_IsArray(steps)) {
         nsteps = cJSON_GetArraySize(steps);
     }
-    const float step_scale = s_edpi_scale * bank_scale * json_mode_scale_or_one(g);
+    const float step_scale = s_edpi_scale * s_game_custom_scale * bank_scale * json_mode_scale_or_one(g);
     if (nsteps == 0) {
         seq->list[0].duration = 0;
         seq->list[0].event.header = HEADER_HID_KEYBOARD;
@@ -1242,6 +1317,7 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
     } else {
         s_profile_game[0] = '\0';
     }
+    parse_profile_customprops(root);
 
     s_cached_schema_version = vn;
 
@@ -1406,6 +1482,8 @@ static bool load_profile_from_flash(void)
 void macro_profile_init(const group_sequence_t *fallback)
 {
     humanize_set_defaults();
+    s_game_custom_scale = 1.f;
+    s_customprops_active = false;
     memset(&group_sequence, 0, sizeof(group_sequence));
     strncpy(s_profile_name, "built-in", sizeof(s_profile_name) - 1);
     s_profile_name[sizeof(s_profile_name) - 1] = '\0';
