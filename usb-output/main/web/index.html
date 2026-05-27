@@ -20,6 +20,7 @@
     <button type="button" id="btn-upload" class="px-4 py-2 rounded-md text-sm bg-blue-600 hover:bg-blue-500 text-white">Upload</button>
   </div>
   <section id="weapons-section" class="hidden space-y-2"><p class="text-sm text-zinc-500">Weapons</p><div id="weapon-bar" class="flex flex-wrap gap-2"></div></section>
+  <section id="games-section" class="hidden space-y-2"><p class="text-sm text-zinc-500">Game</p><div id="game-bar" class="flex flex-wrap gap-2"></div></section>
   <section id="presets-section" class="hidden space-y-2"><p class="text-sm text-zinc-500">Recoil scripts (browser)</p><div id="preset-bar" class="flex flex-wrap gap-2"></div></section>
   <section class="text-sm space-y-1 border border-zinc-700 rounded-lg p-3 bg-zinc-800/50">
     <p><span class="text-zinc-500">Macro:</span> <span id="v-profile" class="font-medium">—</span></p>
@@ -41,7 +42,7 @@ const mode = z.object({ comment: z.string().optional(), name: z.string().optiona
   .superRefine((m, c) => { const n = m.n ?? m.steps.length; if (n > m.steps.length) c.addIssue({ code: 'custom', message: `n=${n} > ${m.steps.length}`, path: ['n'] }); });
 const bank = z.object({ name: z.string().optional(), modes: z.array(mode).max(L.M).optional(), groups: z.array(mode).max(L.M).optional() }).passthrough()
   .superRefine((w, c) => { if (!(w.modes ?? w.groups)?.length) c.addIssue({ code: 'custom', message: 'modes/groups required' }); });
-const schema = z.object({ v: z.union([z.literal(1), z.literal(2), z.literal(3)]), name: z.string().optional(), groups: z.array(mode).min(1).max(L.M).optional(), scripts: z.array(bank).min(1).optional(), weapons: z.array(bank).min(1).optional(), activeScript: z.number().int().nonnegative().optional(), activeWeapon: z.number().int().nonnegative().optional() }).passthrough()
+const schema = z.object({ v: z.union([z.literal(1), z.literal(2), z.literal(3)]), game: z.string().optional(), name: z.string().optional(), groups: z.array(mode).min(1).max(L.M).optional(), scripts: z.array(bank).min(1).optional(), weapons: z.array(bank).min(1).optional(), activeScript: z.number().int().nonnegative().optional(), activeWeapon: z.number().int().nonnegative().optional() }).passthrough()
   .superRefine((p, c) => { if (p.v === 1) { if (!p.groups?.length) c.addIssue({ code: 'custom', message: 'v1 needs groups[]' }); return; } if (!((p.weapons ?? p.scripts)?.length)) c.addIssue({ code: 'custom', message: 'weapons/scripts required' }); });
 const parse = (t) => { let raw; try { raw = JSON.parse(t); } catch (e) { return { ok: 0, e: e.message }; } const r = schema.safeParse(raw); return r.success ? { ok: 1, d: r.data, raw } : { ok: 0, e: r.error.issues.map((i) => (i.path.length ? i.path.join('.') + ': ' : '') + i.message).join('; ') }; };
 const minify = (d) => JSON.stringify(d);
@@ -63,7 +64,7 @@ const pretty = (v, i = 0) => {
 const guns = (p) => p.v !== 1 ? (p.weapons ?? p.scripts ?? []).map((w, i) => ({ i, n: w.name || `w${i}` })) : [{ i: 0, n: p.name || 'profile' }];
 const LS = 'macro_presets', btn = 'px-3 py-1.5 rounded-md text-sm font-medium disabled:opacity-60';
 const presets = () => { try { return JSON.parse(localStorage.getItem(LS) || '{}'); } catch { return {}; } };
-let q = Promise.resolve(), ws, wsT, pollT, loaded, busy, W = [], aw = 0, maxB = L.B, actGun = '', actMacro = '', wsDelay = 8000, wsAt = 0, wsTryAt = 0;
+let q = Promise.resolve(), ws, wsT, pollT, loaded, busy, W = [], aw = 0, maxB = L.B, actGun = '', actMacro = '', actGame = '', selGame = '', wsDelay = 8000, wsAt = 0, wsTryAt = 0;
 const norm = (s) => String(s ?? '').trim().toLowerCase();
 const presetMatchesActive = (key, rawText, macro) => {
   const a = norm(macro);
@@ -71,6 +72,12 @@ const presetMatchesActive = (key, rawText, macro) => {
   if (norm(key) === a) return true;
   const p = parse(rawText);
   return p.ok && p.raw.name && norm(p.raw.name) === a;
+};
+const presetGame = (rawText) => { const p = parse(rawText); return p.ok ? String(p.raw.game ?? '').trim() : ''; };
+const allGames = () => {
+  const s = new Set();
+  for (const t of Object.values(presets())) s.add(presetGame(t));
+  return [...s].sort((a, b) => a === '' ? -1 : b === '' ? 1 : a.localeCompare(b));
 };
 const WS_MIN_MS = 7000;
 const wsOpen = () => ws?.readyState === 1;
@@ -81,25 +88,45 @@ const fq = (u, o = {}) => { const p = q.then(async () => { const ac = new AbortC
 const err = async (r, fb) => { try { const j = await r.json(); if (j.error) return j.error; } catch (_) {} return fb; };
 const conn = (ok, t) => { $('v-conn').textContent = t; $('v-conn').className = (ok ? 'text-green-400' : 'text-amber-400') + ' text-xs pt-1'; };
 const drawG = () => { const b = $('weapon-bar'), on = btn + ' text-white bg-green-600 hover:bg-green-500', off = btn + ' text-zinc-200 bg-zinc-700 hover:bg-zinc-600'; b.replaceChildren(); $('weapons-section').classList.toggle('hidden', W.length <= 1); W.forEach((w) => { const e = document.createElement('button'); e.type = 'button'; e.textContent = w.n; e.disabled = busy; e.className = w.i === aw ? on : off; e.onclick = () => pick(w.i); b.appendChild(e); }); };
+const drawGames = () => {
+  const games = allGames();
+  const bar = $('game-bar'), sect = $('games-section');
+  if (games.length <= 1) { sect.classList.add('hidden'); return; }
+  sect.classList.remove('hidden');
+  bar.replaceChildren();
+  games.forEach((g) => {
+    const e = document.createElement('button');
+    e.type = 'button';
+    e.textContent = g || 'Default';
+    e.disabled = busy;
+    e.className = btn + (g === selGame ? ' text-white bg-blue-600 hover:bg-blue-500' : ' text-zinc-200 bg-zinc-700 hover:bg-zinc-600');
+    e.onclick = () => { selGame = g; drawGames(); drawP(); };
+    bar.appendChild(e);
+  });
+};
 const drawP = () => {
-  const b = $('preset-bar'), keys = Object.keys(presets()).sort();
+  const all = presets();
+  const keys = Object.keys(all).sort().filter((k) => presetGame(all[k]) === selGame);
   const on = btn + ' text-white bg-green-600 hover:bg-green-500';
   const off = btn + ' text-zinc-200 bg-zinc-700 hover:bg-zinc-600';
   $('presets-section').classList.toggle('hidden', !keys.length);
-  b.replaceChildren();
+  $('preset-bar').replaceChildren();
   keys.forEach((k) => {
-    const t = presets()[k];
+    const t = all[k];
     const e = document.createElement('button');
     e.type = 'button';
     e.textContent = k;
     e.disabled = busy;
     e.className = presetMatchesActive(k, t, actMacro) ? on : off;
     e.onclick = () => useP(k);
-    b.appendChild(e);
+    $('preset-bar').appendChild(e);
   });
 };
 const setP = (p) => { W = guns(p); drawG(); };
 const setS = (j) => {
+  actGame = (j.game || '').trim();
+  const games = allGames();
+  if (games.includes(actGame)) selGame = actGame;
   actMacro = (j.profile || '').trim();
   $('v-profile').textContent = actMacro || '—';
   actGun = (j.activeWeaponName || j.activeScriptName || '').trim();
@@ -111,6 +138,7 @@ const setS = (j) => {
   if (ns?.length) W = ns.map((n, i) => ({ i, n: n || `w${i}` }));
   if (W.length && aw >= W.length) aw = 0;
   drawG();
+  drawGames();
   drawP();
   const on = !!j.macrosOn;
   $('btn-toggle').textContent = on ? 'Macros ON' : 'Macros OFF';
@@ -165,6 +193,7 @@ const boot = async (opts = {}) => {
     if (opts.reset) await resetDev();
     await load();
     await stat();
+    drawGames();
     drawP();
     wsSched(1500);
     msg('');
@@ -176,7 +205,7 @@ const boot = async (opts = {}) => {
 $('btn-toggle').onclick = () => fq('/api/toggle-macros', { method: 'POST' }).then((r) => (r.ok && !wsOpen() ? stat() : r.ok || Promise.reject())).catch(() => msg('Toggle failed', 0));
 $('btn-reload').onclick = () => boot({ reset: 1 });
 $('btn-upload').onclick = async () => { try { await up(ed.getValue()); } catch (e) { msg(e.message, 0); } };
-$('btn-lsave').onclick = () => {
+$('btn-lsave').onclick = async () => {
   const t = ed.getValue();
   const p = parse(t);
   if (!p.ok) return msg(p.e, 0);
@@ -186,8 +215,9 @@ $('btn-lsave').onclick = () => {
   if (Object.prototype.hasOwnProperty.call(o, n) && !confirm(`Overwrite local preset "${n}"?`)) return;
   o[n] = t;
   localStorage.setItem(LS, JSON.stringify(o));
+  drawGames();
   drawP();
-  msg(`Saved "${n}" in browser`, 1);
+  try { await up(t); } catch (e) { msg(e.message || 'Upload failed', 0); }
 };
 /* Alt+tab: never open a second socket — onclose alone schedules reconnect. */
 document.addEventListener('visibilitychange', () => {

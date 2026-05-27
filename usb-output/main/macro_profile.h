@@ -7,6 +7,7 @@
 void macro_profile_init(const group_sequence_t *fallback);
 
 const char *macro_profile_get_name(void);
+const char *macro_profile_get_game(void);
 
 bool macro_profile_macros_enabled(void);
 /** When true (default), macro mouse deltas add to the user's current mouse deltas on each tick. */

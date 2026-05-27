@@ -562,6 +562,7 @@ Single flat list of macro groups. All groups are **active** at once (up to 10).
 |-------|------|----------|-------------|
 | `v` | number | **yes** | Must be `1`. |
 | `name` | string | no | Shown as `profile` in status. |
+| `game` | string | no | Optional game label (`"rust"`, `"cs2"`, etc.), shown as `game` in status/UI. |
 | `groups` | array | **yes** | Macro groups (see [shared fields](#group--mode-fields-all-versions)). |
 | `eDPI` | number | no | Your eDPI (see [scaling](#sensitivity-scaling-edpi)). |
 | `patternEDPI` | number | no | Author reference eDPI (default `800`). |
@@ -627,7 +628,7 @@ Each group can use a different `press` chord. **Do not** leave empty groups in t
 
 ## Schema v2
 
-Adds up to **4 script banks** (weapons), **one active bank** at a time, and optional **hotkeys**.
+Supports multiple script banks (weapons), **one active bank** at a time, and optional **hotkeys**.
 
 ### Root object
 
@@ -635,6 +636,7 @@ Adds up to **4 script banks** (weapons), **one active bank** at a time, and opti
 |-------|------|----------|---------|-------------|
 | `v` | number | **yes** | — | Must be `2`. |
 | `name` | string | no | `"flash"` | Profile display name. |
+| `game` | string | no | `""` | Optional game label for grouping. |
 | `scripts` | array | yes* | — | Weapon banks (no fixed max). *Required unless root `groups` is used. |
 | `groups` | array | yes* | — | Single-bank shortcut (same as one script with these groups). |
 | `activeScript` | number | no | `0` | Index into `scripts` loaded at boot (0-based). |
@@ -873,6 +875,7 @@ All [shared group fields](#group--mode-fields-all-versions), plus:
 |-------|-------------|
 | `schemaVer` | `1`, `2`, or `3` from profile `v`. |
 | `profile` | Profile `name`. |
+| `game` | Profile `game` (empty when unset). |
 | `fw` | ESP-IDF version string. |
 | `macrosOn` | Global macro output enabled. |
 | `eDPI` | Parsed user eDPI (`0` if unset). |
@@ -883,7 +886,7 @@ All [shared group fields](#group--mode-fields-all-versions), plus:
 
 | Field | Description |
 |-------|-------------|
-| `scriptCount` | Number of banks (1–4). |
+| `scriptCount` | Number of banks. |
 | `scriptNames` | Array of bank names. |
 | `activeScript` | Active bank index. |
 | `activeWeapon` | Same as `activeScript` (v3). |
@@ -900,6 +903,7 @@ All [shared group fields](#group--mode-fields-all-versions), plus:
   "statusSeq": 12,
   "fw": "IDF v5.5.1",
   "profile": "rust-ak-v3",
+  "game": "rust",
   "macrosOn": true,
   "eDPI": 800,
   "patternEDPI": 800,

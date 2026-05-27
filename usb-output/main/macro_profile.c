@@ -153,6 +153,7 @@ void macro_profile_apply_mouse_step_jitter(int16_t *x, int16_t *y)
 #define MACRO_PROFILE_NAME_CAP 40
 
 static char s_profile_name[MACRO_PROFILE_NAME_CAP] = "built-in";
+static char s_profile_game[MACRO_PROFILE_NAME_CAP] = "";
 static bool s_macros_enabled = true;
 static bool s_additive_mouse = false;
 static float s_edpi = 0.f;
@@ -354,6 +355,7 @@ const char *macro_profile_get_parse_error(void)
 #endif
 
 const char *macro_profile_get_name(void) { return s_profile_name; }
+const char *macro_profile_get_game(void) { return s_profile_game; }
 
 bool macro_profile_macros_enabled(void) { return s_macros_enabled; }
 
@@ -476,6 +478,7 @@ void macro_profile_build_status_json(char *buf, size_t buflen)
     cJSON_AddNumberToObject(root, "statusSeq", (double)seq);
     cJSON_AddStringToObject(root, "fw", fw);
     cJSON_AddStringToObject(root, "profile", macro_profile_get_name());
+    cJSON_AddStringToObject(root, "game", macro_profile_get_game());
     cJSON_AddBoolToObject(root, "macrosOn", s_macros_enabled);
     cJSON_AddNumberToObject(root, "activeScript", ai);
     cJSON_AddNumberToObject(root, "activeWeapon", ai);
@@ -501,7 +504,7 @@ void macro_profile_build_status_json(char *buf, size_t buflen)
     cJSON *names = cJSON_CreateArray();
     if (names) {
         for (int i = 0; i < sn; i++) {
-            cJSON_AddItemToArray(names, cJSON_CreateString(macro_profile_script_name((uint8_t)i)));
+            cJSON_AddItemToArray(names, cJSON_CreateString(macro_profile_script_name((uint16_t)i)));
         }
         cJSON_AddItemToObject(root, "scriptNames", names);
         cJSON_AddItemToObject(root, "weaponNames", cJSON_Duplicate(names, 1));
@@ -1232,6 +1235,13 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
         strncpy(s_profile_name, "flash", sizeof(s_profile_name) - 1);
         s_profile_name[sizeof(s_profile_name) - 1] = '\0';
     }
+    const cJSON *game = cJSON_GetObjectItem(root, "game");
+    if (game && cJSON_IsString(game) && game->valuestring) {
+        strncpy(s_profile_game, game->valuestring, sizeof(s_profile_game) - 1);
+        s_profile_game[sizeof(s_profile_game) - 1] = '\0';
+    } else {
+        s_profile_game[0] = '\0';
+    }
 
     s_cached_schema_version = vn;
 
@@ -1399,6 +1409,7 @@ void macro_profile_init(const group_sequence_t *fallback)
     memset(&group_sequence, 0, sizeof(group_sequence));
     strncpy(s_profile_name, "built-in", sizeof(s_profile_name) - 1);
     s_profile_name[sizeof(s_profile_name) - 1] = '\0';
+    s_profile_game[0] = '\0';
 
 #if CONFIG_MACRO_WEB_UI
     esp_err_t mnt = spiffs_mount_once();
