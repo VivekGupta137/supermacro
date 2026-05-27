@@ -13,7 +13,7 @@ set(srcs
     )
 
 if(CONFIG_MACRO_WEB_UI)
-    if(CONFIG_HTTPD_WS_SUPPORT)
+    if(CONFIG_MACRO_WEB_USE_WS)
         list(APPEND srcs "macro_ws.c")
     else()
         list(APPEND srcs "macro_ws_stub.c")
@@ -66,6 +66,12 @@ idf_component_register(
     INCLUDE_DIRS "."
     PRIV_REQUIRES ${priv_reqs}
     )
+
+if(CONFIG_MACRO_WEB_UI AND CONFIG_LWIP_MAX_SOCKETS LESS 40)
+    message(FATAL_ERROR
+        "CONFIG_LWIP_MAX_SOCKETS=${CONFIG_LWIP_MAX_SOCKETS} is too low for the web UI. "
+        "Run: idf.py fullclean build  (sdkconfig.defaults sets 40)")
+endif()
 
 if(TARGET generate_doc_assets)
     add_dependencies(${COMPONENT_LIB} generate_doc_assets)

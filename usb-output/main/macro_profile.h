@@ -21,9 +21,9 @@ float macro_profile_get_edpi_scale(void);
 float macro_profile_sequence_mouse_scale(int group_index);
 /** Refresh runtime scale table after `group_sequence` is updated. */
 void macro_profile_sync_active_group_scales(const group_sequence_t *gs);
-uint8_t macro_profile_script_count(void);
-uint8_t macro_profile_active_script_index(void);
-const char *macro_profile_script_name(uint8_t index);
+uint16_t macro_profile_script_count(void);
+uint16_t macro_profile_active_script_index(void);
+const char *macro_profile_script_name(uint16_t index);
 /** Status JSON for /api/status and WebSocket push (weapon names, mode scales, etc.). */
 #define MACRO_PROFILE_STATUS_JSON_MAX 4096
 void macro_profile_build_status_json(char *buf, size_t buflen);
@@ -57,7 +57,7 @@ const char *macro_profile_get_parse_error(void);
 /** Same as physical `nextScript` hotkey: advance active script bank (no-op if only one script). */
 void macro_profile_http_next_script(void);
 /** Select active weapon/script bank by index (clamped). */
-void macro_profile_http_set_active_weapon(uint8_t index);
+void macro_profile_http_set_active_weapon(uint16_t index);
 /** Same as physical `toggleMacros` hotkey: flip global macro output on/off. */
 void macro_profile_http_toggle_macros(void);
 #endif

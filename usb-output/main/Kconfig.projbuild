@@ -4,12 +4,20 @@ menu "Macro profile / web UI"
         bool "Enable Wi-Fi and HTTP profile upload"
         default n
         select ESP_WIFI_ENABLED
-        select HTTPD_WS_SUPPORT
         help
             Mounts SPIFFS on partition "storage", starts Wi-Fi, serves minimal web UI.
             After enabling this, open the submenu "Wi-Fi and profile settings" below to choose
             SoftAP vs Station and set credentials.
             Requires a custom partition table with a SPIFFS "storage" partition.
+
+    config MACRO_WEB_USE_WS
+        bool "Enable WebSocket /ws for live UI status"
+        depends on MACRO_WEB_UI
+        default y
+        select HTTPD_WS_SUPPORT
+        help
+            Pushes status JSON over /ws. Stale HTTP sessions are closed when /ws connects
+            or disconnects; use POST /api/conn-reset to force a fresh socket pool.
 
     menu "Wi-Fi and profile settings"
         depends on MACRO_WEB_UI
@@ -98,6 +106,14 @@ menu "Macro profile / web UI"
             range 4096 1048576
             help
                 Large multi-weapon Rust/CS profiles are often 70–90 KB. Increase if uploads fail with "profile too large".
+
+        config MACRO_MAX_WEAPONS
+            int "Max weapons per profile (0 = unlimited)"
+            default 0
+            range 0 512
+            help
+                Upper bound on weapons[] / scripts[] banks per profile. 0 = no fixed limit (heap permitting).
+                Set a positive value only to cap RAM use on small modules.
 
     endmenu
 

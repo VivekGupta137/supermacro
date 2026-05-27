@@ -9,6 +9,8 @@
 
 void macro_ws_init(httpd_handle_t hd);
 void macro_ws_httpd_close_cb(httpd_handle_t hd, int sockfd);
+/** Active WebSocket socket, or -1 if none. */
+int macro_ws_active_fd(void);
 esp_err_t macro_ws_handler(httpd_req_t *req);
 void macro_ws_request_broadcast(void);
 
@@ -22,6 +24,10 @@ static inline void macro_ws_httpd_close_cb(httpd_handle_t hd, int sockfd)
 {
     (void)hd;
     (void)sockfd;
+}
+static inline int macro_ws_active_fd(void)
+{
+    return -1;
 }
 static inline esp_err_t macro_ws_handler(httpd_req_t *req)
 {

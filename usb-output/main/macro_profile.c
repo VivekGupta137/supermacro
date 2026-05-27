@@ -160,20 +160,171 @@ static float s_pattern_edpi = 800.f;
 static float s_edpi_scale = 1.f;
 static float s_seq_scale[MAX_KEY_MODIFICATION_SEQUENCE];
 #if CONFIG_MACRO_WEB_UI
-#define MAX_MACRO_SCRIPTS 4
 #define MAX_SCRIPT_NAME_LEN MACRO_PROFILE_NAME_CAP
 
-static group_sequence_t s_script_banks[MAX_MACRO_SCRIPTS];
-static uint8_t s_script_count;
-static uint8_t s_active_script;
-static char s_script_names[MAX_MACRO_SCRIPTS][MAX_SCRIPT_NAME_LEN];
+static char *s_script_names;
+static char *s_profile_json_cache;
+static uint16_t s_script_count;
+static uint16_t s_script_cap;
+static uint16_t s_active_script;
+static int s_cached_schema_version;
+static char s_parse_error[128];
+
+static void set_parse_error(const char *msg);
+static void set_parse_errorf(const char *fmt, ...);
+static float json_scale_or_one(const cJSON *obj);
+static bool fill_groups_from_json(const cJSON *groups, group_sequence_t *out_seq, float bank_scale,
+                                 uint8_t mode_set_id);
+static const cJSON *profile_weapon_banks_array(const cJSON *root);
+static const cJSON *weapon_modes_array(const cJSON *weapon);
+
+static char *script_name_buf(uint16_t index)
+{
+    if (!s_script_names || index >= s_script_cap) {
+        return NULL;
+    }
+    return s_script_names + (size_t)index * MAX_SCRIPT_NAME_LEN;
+}
+
+static void profile_weapon_meta_free(void)
+{
+    free(s_script_names);
+    free(s_profile_json_cache);
+    s_script_names = NULL;
+    s_profile_json_cache = NULL;
+    s_script_count = 0;
+    s_script_cap = 0;
+    s_cached_schema_version = 0;
+}
+
+static bool profile_json_cache_set(const char *json)
+{
+    free(s_profile_json_cache);
+    s_profile_json_cache = NULL;
+    if (!json) {
+        return true;
+    }
+    const size_t n = strlen(json) + 1;
+    if (n > (size_t)CONFIG_MACRO_PROFILE_MAX_SIZE + 1) {
+        set_parse_error("profile JSON too large to cache");
+        return false;
+    }
+    char *copy = (char *)malloc(n);
+    if (!copy) {
+        set_parse_error("out of memory for profile cache");
+        return false;
+    }
+    memcpy(copy, json, n);
+    s_profile_json_cache = copy;
+    return true;
+}
+
+static bool profile_names_reserve(uint16_t need)
+{
+#if CONFIG_MACRO_MAX_WEAPONS > 0
+    if (need > (uint16_t)CONFIG_MACRO_MAX_WEAPONS) {
+        set_parse_errorf("weapon count %u (max %d)", (unsigned)need, CONFIG_MACRO_MAX_WEAPONS);
+        return false;
+    }
+#endif
+    if (need <= s_script_cap) {
+        return true;
+    }
+    uint16_t new_cap = s_script_cap ? s_script_cap : 4;
+    while (new_cap < need) {
+        if (new_cap >= 512) {
+            new_cap = need;
+            break;
+        }
+        new_cap = (uint16_t)(new_cap * 2);
+    }
+    char *names = (char *)realloc(s_script_names, (size_t)new_cap * MAX_SCRIPT_NAME_LEN);
+    if (!names) {
+        set_parse_error("out of memory for weapon names");
+        return false;
+    }
+    memset(names + (size_t)s_script_cap * MAX_SCRIPT_NAME_LEN, 0,
+           (size_t)(new_cap - s_script_cap) * MAX_SCRIPT_NAME_LEN);
+    s_script_names = names;
+    s_script_cap = new_cap;
+    return true;
+}
+
+static bool profile_load_weapon_bank(uint16_t index, group_sequence_t *out)
+{
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!s_profile_json_cache) {
+        set_parse_error("no profile JSON cached");
+        return false;
+    }
+    cJSON *root = cJSON_Parse(s_profile_json_cache);
+    if (!root) {
+        set_parse_error("profile cache JSON parse failed");
+        return false;
+    }
+    const int vn = s_cached_schema_version;
+    bool ok = false;
+    if (vn == 1) {
+        const cJSON *groups = cJSON_GetObjectItem(root, "groups");
+        ok = fill_groups_from_json(groups, out, 1.f, 1);
+    } else {
+        const cJSON *banks = profile_weapon_banks_array(root);
+        if (!banks || !cJSON_IsArray(banks) || index >= s_script_count) {
+            set_parse_errorf("weapon index %u invalid", (unsigned)index);
+        } else {
+            const cJSON *sp = cJSON_GetArrayItem(banks, index);
+            const float script_scale = json_scale_or_one(sp);
+            const cJSON *grp = weapon_modes_array(sp);
+            const uint8_t mode_set_id = (uint8_t)(index + 1);
+            ok = fill_groups_from_json(grp, out, script_scale, mode_set_id);
+            if (!ok && s_parse_error[0] == '\0') {
+                set_parse_errorf("weapon[%u] invalid", (unsigned)index);
+            }
+        }
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
+static bool profile_apply_weapon_index(uint16_t index)
+{
+    if (s_script_count == 0) {
+        return false;
+    }
+    if (index >= s_script_count) {
+        index = (uint16_t)(s_script_count - 1);
+    }
+    if (!profile_load_weapon_bank(index, &group_sequence)) {
+        return false;
+    }
+    s_active_script = index;
+    macro_sequences_apply(&group_sequence);
+    macro_profile_sync_active_group_scales(&group_sequence);
+    return true;
+}
+
+static void set_script_name(uint16_t index, const char *name, int vn, int si)
+{
+    char *dst = script_name_buf(index);
+    if (!dst) {
+        return;
+    }
+    if (name && name[0]) {
+        strncpy(dst, name, MAX_SCRIPT_NAME_LEN - 1);
+        dst[MAX_SCRIPT_NAME_LEN - 1] = '\0';
+    } else {
+        snprintf(dst, MAX_SCRIPT_NAME_LEN, (vn == 3) ? "weapon%d" : "script%d", si);
+    }
+}
 static hid_transmit_t s_toggle_macros_trig;
 static hid_transmit_t s_next_script_trig;
 static bool s_has_toggle_macros_trig;
 static bool s_has_next_script_trig;
 static int s_schema_version = 1;
 static uint32_t s_status_seq;
-static char s_parse_error[128];
 
 static void set_parse_error(const char *msg)
 {
@@ -246,7 +397,7 @@ void macro_profile_sync_active_group_scales(const group_sequence_t *gs)
     }
 }
 
-uint8_t macro_profile_script_count(void)
+uint16_t macro_profile_script_count(void)
 {
 #if CONFIG_MACRO_WEB_UI
     return (s_script_count == 0) ? 1 : s_script_count;
@@ -255,7 +406,7 @@ uint8_t macro_profile_script_count(void)
 #endif
 }
 
-uint8_t macro_profile_active_script_index(void)
+uint16_t macro_profile_active_script_index(void)
 {
 #if CONFIG_MACRO_WEB_UI
     if (s_script_count == 0) {
@@ -270,13 +421,14 @@ uint8_t macro_profile_active_script_index(void)
 #endif
 }
 
-const char *macro_profile_script_name(uint8_t index)
+const char *macro_profile_script_name(uint16_t index)
 {
 #if CONFIG_MACRO_WEB_UI
     if (s_script_count == 0 || index >= s_script_count) {
         return macro_profile_get_name();
     }
-    return s_script_names[index];
+    const char *n = script_name_buf(index);
+    return (n && n[0]) ? n : macro_profile_get_name();
 #else
     (void)index;
     return macro_profile_get_name();
@@ -303,9 +455,7 @@ void macro_profile_build_status_json(char *buf, size_t buflen)
     int sn = (int)macro_profile_script_count();
     int ai = (int)macro_profile_active_script_index();
     const group_sequence_t *gs_for_count = &group_sequence;
-    if (s_script_count > 0 && (uint8_t)ai < s_script_count) {
-        gs_for_count = &s_script_banks[(uint8_t)ai];
-    }
+    (void)ai;
     int ag = count_dense_macro_groups(gs_for_count);
     uint32_t seq = ++s_status_seq;
 
@@ -330,8 +480,8 @@ void macro_profile_build_status_json(char *buf, size_t buflen)
     cJSON_AddNumberToObject(root, "activeScript", ai);
     cJSON_AddNumberToObject(root, "activeWeapon", ai);
     cJSON_AddNumberToObject(root, "scriptCount", sn);
-    cJSON_AddStringToObject(root, "activeScriptName", macro_profile_script_name((uint8_t)ai));
-    cJSON_AddStringToObject(root, "activeWeaponName", macro_profile_script_name((uint8_t)ai));
+    cJSON_AddStringToObject(root, "activeScriptName", macro_profile_script_name((uint16_t)ai));
+    cJSON_AddStringToObject(root, "activeWeaponName", macro_profile_script_name((uint16_t)ai));
     cJSON_AddNumberToObject(root, "activeGroupCount", ag);
     cJSON_AddNumberToObject(root, "activeModeCount", ag);
     cJSON_AddNumberToObject(root, "profileMaxBytes", CONFIG_MACRO_PROFILE_MAX_SIZE);
@@ -402,9 +552,10 @@ static void advance_active_script(void)
     if (s_script_count <= 1) {
         return;
     }
-    s_active_script = (uint8_t)((s_active_script + 1) % s_script_count);
-    macro_sequences_apply(&s_script_banks[s_active_script]);
-    macro_ws_request_broadcast();
+    const uint16_t next = (uint16_t)((s_active_script + 1) % s_script_count);
+    if (profile_apply_weapon_index(next)) {
+        macro_ws_request_broadcast();
+    }
 }
 
 void macro_profile_http_next_script(void)
@@ -416,18 +567,17 @@ void macro_profile_http_next_script(void)
     advance_active_script();
 }
 
-void macro_profile_http_set_active_weapon(uint8_t index)
+void macro_profile_http_set_active_weapon(uint16_t index)
 {
     if (s_script_count == 0) {
         macro_ws_request_broadcast();
         return;
     }
     if (index >= s_script_count) {
-        index = (uint8_t)(s_script_count - 1);
+        index = (uint16_t)(s_script_count - 1);
     }
     if (index != s_active_script) {
-        s_active_script = index;
-        macro_sequences_apply(&s_script_banks[s_active_script]);
+        (void)profile_apply_weapon_index(index);
     }
     macro_ws_request_broadcast();
 }
@@ -541,8 +691,7 @@ static void profile_runtime_reset_parsed(void)
 {
     humanize_set_defaults();
 #if CONFIG_MACRO_WEB_UI
-    memset(s_script_banks, 0, sizeof(s_script_banks));
-    s_script_count = 0;
+    profile_weapon_meta_free();
     s_active_script = 0;
 #endif
     s_additive_mouse = false;
@@ -1084,22 +1233,30 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
         s_profile_name[sizeof(s_profile_name) - 1] = '\0';
     }
 
+    s_cached_schema_version = vn;
+
     if (vn == 1) {
-        const cJSON *groups = cJSON_GetObjectItem(root, "groups");
-        if (!fill_groups_from_json(groups, out, 1.f, 1)) {
+        if (!profile_names_reserve(1)) {
             cJSON_Delete(root);
             memset(out, 0, sizeof(*out));
             profile_runtime_reset_parsed();
-            if (s_parse_error[0] == '\0') {
-                set_parse_error("v1 groups invalid");
-            }
             return false;
         }
-        memcpy(&s_script_banks[0], out, sizeof(group_sequence_t));
         s_script_count = 1;
-        strncpy(s_script_names[0], s_profile_name, sizeof(s_script_names[0]) - 1);
-        s_script_names[0][sizeof(s_script_names[0]) - 1] = '\0';
+        set_script_name(0, s_profile_name, 1, 0);
         s_active_script = 0;
+        if (!profile_json_cache_set(json)) {
+            cJSON_Delete(root);
+            memset(out, 0, sizeof(*out));
+            profile_runtime_reset_parsed();
+            return false;
+        }
+        if (!profile_load_weapon_bank(0, out)) {
+            cJSON_Delete(root);
+            memset(out, 0, sizeof(*out));
+            profile_runtime_reset_parsed();
+            return false;
+        }
         s_macros_enabled = true;
         s_has_toggle_macros_trig = false;
         s_has_next_script_trig = false;
@@ -1111,51 +1268,35 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
     const cJSON *banks = profile_weapon_banks_array(root);
     if (banks && cJSON_IsArray(banks)) {
         int ns = cJSON_GetArraySize(banks);
-        if (ns <= 0 || ns > MAX_MACRO_SCRIPTS) {
+        if (ns <= 0) {
             cJSON_Delete(root);
             memset(out, 0, sizeof(*out));
             profile_runtime_reset_parsed();
-            set_parse_errorf("weapon count %d (max %d)", ns, MAX_MACRO_SCRIPTS);
+            set_parse_error("weapons/scripts array is empty");
+            return false;
+        }
+        if (!profile_names_reserve((uint16_t)ns)) {
+            cJSON_Delete(root);
+            memset(out, 0, sizeof(*out));
+            profile_runtime_reset_parsed();
             return false;
         }
         for (int si = 0; si < ns; si++) {
             const cJSON *sp = cJSON_GetArrayItem(banks, si);
-            const float script_scale = json_scale_or_one(sp);
-            const cJSON *grp = weapon_modes_array(sp);
-            const uint8_t mode_set_id = (uint8_t)(si + 1);
-            if (!fill_groups_from_json(grp, &s_script_banks[si], script_scale, mode_set_id)) {
-                cJSON_Delete(root);
-                memset(out, 0, sizeof(*out));
-                profile_runtime_reset_parsed();
-                if (s_parse_error[0] == '\0') {
-                    set_parse_errorf("weapon[%d] invalid", si);
-                }
-                return false;
-            }
             const cJSON *sn = cJSON_GetObjectItem(sp, "name");
-            if (sn && cJSON_IsString(sn) && sn->valuestring && sn->valuestring[0]) {
-                strncpy(s_script_names[si], sn->valuestring, sizeof(s_script_names[si]) - 1);
-                s_script_names[si][sizeof(s_script_names[si]) - 1] = '\0';
-            } else {
-                snprintf(s_script_names[si], sizeof(s_script_names[si]),
-                         (vn == 3) ? "weapon%d" : "script%d", si);
-            }
+            const char *sname = (sn && cJSON_IsString(sn) && sn->valuestring) ? sn->valuestring : NULL;
+            set_script_name((uint16_t)si, sname, vn, si);
         }
-        s_script_count = (uint8_t)ns;
+        s_script_count = (uint16_t)ns;
     } else {
-        const cJSON *groups = cJSON_GetObjectItem(root, "groups");
-        if (!fill_groups_from_json(groups, &s_script_banks[0], 1.f, 1)) {
+        if (!profile_names_reserve(1)) {
             cJSON_Delete(root);
             memset(out, 0, sizeof(*out));
             profile_runtime_reset_parsed();
-            if (s_parse_error[0] == '\0') {
-                set_parse_error("scripts/groups invalid");
-            }
             return false;
         }
         s_script_count = 1;
-        strncpy(s_script_names[0], s_profile_name, sizeof(s_script_names[0]) - 1);
-        s_script_names[0][sizeof(s_script_names[0]) - 1] = '\0';
+        set_script_name(0, s_profile_name, vn, 0);
     }
 
     const cJSON *active = cJSON_GetObjectItem(root, "activeWeapon");
@@ -1170,7 +1311,7 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
         if (a >= (int)s_script_count) {
             a = (int)s_script_count - 1;
         }
-        s_active_script = (uint8_t)a;
+        s_active_script = (uint16_t)a;
     } else {
         s_active_script = 0;
     }
@@ -1202,9 +1343,19 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
         }
     }
 
-    memcpy(out, &s_script_banks[s_active_script], sizeof(*out));
-    macro_profile_sync_active_group_scales(out);
     cJSON_Delete(root);
+
+    if (!profile_json_cache_set(json)) {
+        memset(out, 0, sizeof(*out));
+        profile_runtime_reset_parsed();
+        return false;
+    }
+    if (!profile_load_weapon_bank(s_active_script, out)) {
+        memset(out, 0, sizeof(*out));
+        profile_runtime_reset_parsed();
+        return false;
+    }
+    macro_profile_sync_active_group_scales(out);
     return true;
 }
 
@@ -1268,10 +1419,12 @@ void macro_profile_init(const group_sequence_t *fallback)
     group_sequence = *fallback;
     macro_profile_sync_active_group_scales(&group_sequence);
 #if CONFIG_MACRO_WEB_UI
-    memcpy(&s_script_banks[0], &group_sequence, sizeof(group_sequence_t));
-    s_script_count = 1;
-    s_active_script = 0;
-    snprintf(s_script_names[0], sizeof(s_script_names[0]), "built-in");
+    if (profile_names_reserve(1)) {
+        s_script_count = 1;
+        s_active_script = 0;
+        s_cached_schema_version = 1;
+        set_script_name(0, "built-in", 1, 0);
+    }
     s_has_toggle_macros_trig = false;
     s_has_next_script_trig = false;
     s_macros_enabled = true;

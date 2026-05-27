@@ -1,4 +1,4 @@
-/* Stubs when MACRO_WEB_UI is on but CONFIG_HTTPD_WS_SUPPORT is off (old sdkconfig). */
+/* Stubs when MACRO_WEB_UI is on but CONFIG_MACRO_WEB_USE_WS is off. */
 
 #include "config.h"
 #include "macro_ws.h"
@@ -12,6 +12,8 @@ void macro_ws_httpd_close_cb(httpd_handle_t hd, int sockfd)
     (void)hd;
     (void)sockfd;
 }
+
+int macro_ws_active_fd(void) { return -1; }
 
 esp_err_t macro_ws_handler(httpd_req_t *req)
 {

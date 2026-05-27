@@ -14,6 +14,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
@@ -36,35 +37,28 @@ static bool s_http_started;
 static httpd_handle_t s_httpd;
 static esp_timer_handle_t s_http_health_timer;
 static int s_http_max_clients;
-static volatile bool s_http_restart_requested;
-static volatile bool s_http_purge_only;
-static volatile bool s_http_need_wifi_reset;
+static volatile bool s_close_keep_ws;
 static volatile bool s_http_want_running;
-static volatile bool s_restart_in_progress;
-static vprintf_like_t s_prev_log_vprintf;
-static int64_t s_restart_cooldown_until_us;
-static int64_t s_last_purge_us;
-static int64_t s_accept113_window_start_us;
-static int s_accept113_in_window;
 static TaskHandle_t s_http_recovery_task;
+static TaskHandle_t s_reset_task;
+static volatile bool s_http_boot_pending;
+static int64_t s_last_close_clients_us;
+static volatile bool s_close_clients_requested;
+static volatile bool s_reset_pending;
+static vprintf_like_t s_prev_log_vprintf;
+static volatile bool s_in_log_hook;
 
-#define HTTP_RESTART_FAIL_COOLDOWN_MS 20000
-#define HTTP_WIFI_RESET_COOLDOWN_MS 15000
-#define HTTP_ACCEPT113_PURGE_LIMIT 4
-#define HTTP_ACCEPT113_WINDOW_US 10000000
-#define HTTP_MIN_PURGE_INTERVAL_US 2500000
+#define HTTP_RECOVER_STACK 4096
+#define HTTP_BOOT_STACK 8192
+#define HTTP_CLOSE_CLIENTS_COOLDOWN_US 3000000
+#define HTTP_RESET_DELAY_MS 400
 
 static void http_server_start(void);
 static void http_server_shutdown(void);
 static void http_stop_listener(void);
-static void http_purge_sessions_only(void);
 static void http_schedule_recovery(void);
-#if CONFIG_MACRO_WIFI_ROLE_STA
-static void http_wifi_lwip_reset(void);
-#endif
-static void http_set_restart_cooldown_ms(int ms);
-static bool http_recovery_allowed(void);
-static void http_note_accept113(void);
+static void http_defer_server_start(void);
+static void macro_web_request_device_reset(const char *reason);
 
 /** Free sockets quickly on ESP32 (default keep-alive holds slots until max_open_sockets). */
 static void http_set_conn_close(httpd_req_t *req)
@@ -117,71 +111,43 @@ static esp_err_t http_send_body_chunked(httpd_req_t *req, const char *data, size
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
-static int http_log_vprintf(const char *fmt, va_list ap)
+static void device_reset_task(void *arg)
 {
-    if (fmt != NULL) {
-        char msg[160];
-        va_list copy;
-        va_copy(copy, ap);
-        int n = vsnprintf(msg, sizeof(msg), fmt, copy);
-        va_end(copy);
-        if (n > 0) {
-            if (strstr(msg, "accept") != NULL && strstr(msg, "113") != NULL) {
-                http_note_accept113();
-            }
-            if (strstr(msg, "socket") != NULL && strstr(msg, "105") != NULL) {
-                s_http_need_wifi_reset = true;
-                http_set_restart_cooldown_ms(HTTP_RESTART_FAIL_COOLDOWN_MS);
-                http_schedule_recovery();
-            }
-        }
-    }
-    if (s_prev_log_vprintf != NULL) {
-        return s_prev_log_vprintf(fmt, ap);
-    }
-    return vprintf(fmt, ap);
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(HTTP_RESET_DELAY_MS));
+    esp_restart();
 }
 
-static void http_set_restart_cooldown_ms(int ms)
+static void macro_web_request_device_reset(const char *reason)
 {
-    s_restart_cooldown_until_us = esp_timer_get_time() + (int64_t)ms * 1000LL;
-}
-
-static bool http_recovery_allowed(void)
-{
-    return !s_restart_in_progress && esp_timer_get_time() >= s_restart_cooldown_until_us;
-}
-
-static void http_note_accept113(void)
-{
-    const int64_t now = esp_timer_get_time();
-
-    if (s_accept113_window_start_us == 0 || (now - s_accept113_window_start_us) > HTTP_ACCEPT113_WINDOW_US) {
-        s_accept113_window_start_us = now;
-        s_accept113_in_window = 0;
-    }
-    s_accept113_in_window++;
-
-    if (s_accept113_in_window <= HTTP_ACCEPT113_PURGE_LIMIT && s_httpd != NULL &&
-        (now - s_last_purge_us) >= HTTP_MIN_PURGE_INTERVAL_US) {
-        s_http_purge_only = true;
-        http_schedule_recovery();
+    if (s_reset_pending) {
         return;
     }
-
-    ESP_LOGW(TAG, "accept(113) x%d — resetting Wi-Fi TCP stack", s_accept113_in_window);
-    s_accept113_in_window = 0;
-    s_accept113_window_start_us = 0;
-    s_http_purge_only = false;
-    s_http_need_wifi_reset = true;
-    if (http_recovery_allowed()) {
-        http_schedule_recovery();
-    } else {
-        http_set_restart_cooldown_ms(3000);
+    s_reset_pending = true;
+    ESP_LOGE(TAG, "Resetting ESP32: %s", reason != NULL ? reason : "web error");
+    if (s_reset_task == NULL) {
+        (void)xTaskCreate(device_reset_task, "web_reset", 2048, NULL, 10, &s_reset_task);
     }
 }
 
-static void http_close_all_clients(void)
+static bool http_log_is_fatal(const char *msg)
+{
+    if (strstr(msg, "accept") != NULL && strstr(msg, "113") != NULL) {
+        return true;
+    }
+    if (strstr(msg, "error in socket (105)") != NULL) {
+        return true;
+    }
+    if (strstr(msg, "httpd_start failed") != NULL) {
+        return true;
+    }
+    if (strstr(msg, "httpd_server: error accepting") != NULL) {
+        return true;
+    }
+    return false;
+}
+
+static void http_close_all_clients_except(int keep_fd)
 {
     if (!s_httpd) {
         return;
@@ -192,15 +158,66 @@ static void http_close_all_clients(void)
         return;
     }
     for (size_t i = 0; i < count; i++) {
+        if (keep_fd >= 0 && client_fds[i] == keep_fd) {
+            continue;
+        }
         httpd_sess_trigger_close(s_httpd, client_fds[i]);
     }
+}
+
+static void http_close_all_clients(void) { http_close_all_clients_except(-1); }
+
+void macro_web_close_other_clients(int keep_fd)
+{
+    if (!s_httpd || !s_http_started) {
+        return;
+    }
+    http_close_all_clients_except(keep_fd);
+}
+
+void macro_web_close_active_clients(void)
+{
+    if (!s_httpd || !s_http_started) {
+        return;
+    }
+    const int64_t now = esp_timer_get_time();
+    if (s_last_close_clients_us != 0 && (now - s_last_close_clients_us) < HTTP_CLOSE_CLIENTS_COOLDOWN_US) {
+        return;
+    }
+    s_close_clients_requested = true;
+    http_schedule_recovery();
+}
+
+void macro_web_request_listener_restart(void)
+{
+    macro_web_close_active_clients();
+}
+
+static int http_log_vprintf(const char *fmt, va_list ap)
+{
+    if (!s_in_log_hook && fmt != NULL) {
+        char msg[120];
+        va_list copy;
+        s_in_log_hook = true;
+        va_copy(copy, ap);
+        int n = vsnprintf(msg, sizeof(msg), fmt, copy);
+        va_end(copy);
+        if (n > 0 && http_log_is_fatal(msg)) {
+            macro_web_request_device_reset(msg);
+        }
+        s_in_log_hook = false;
+    }
+    if (s_prev_log_vprintf != NULL) {
+        return s_prev_log_vprintf(fmt, ap);
+    }
+    return vprintf(fmt, ap);
 }
 
 static void http_stop_listener(void)
 {
     if (s_httpd != NULL) {
         http_close_all_clients();
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(400));
         esp_err_t err = httpd_stop(s_httpd);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "httpd_stop: %s", esp_err_to_name(err));
@@ -210,103 +227,26 @@ static void http_stop_listener(void)
     s_http_started = false;
 }
 
-static void http_purge_sessions_only(void)
-{
-    if (s_httpd == NULL) {
-        return;
-    }
-    ESP_LOGW(TAG, "Purging HTTP sessions (keep listener)");
-    http_close_all_clients();
-    vTaskDelay(pdMS_TO_TICKS(300));
-    s_last_purge_us = esp_timer_get_time();
-    s_http_purge_only = false;
-    s_http_restart_requested = false;
-}
-
-#if CONFIG_MACRO_WIFI_ROLE_STA
-static void http_wifi_lwip_reset(void)
-{
-    ESP_LOGW(TAG, "Wi-Fi reconnect to free lwIP TCP sockets");
-    s_restart_in_progress = true;
-    s_http_need_wifi_reset = false;
-    s_http_restart_requested = false;
-    s_http_purge_only = false;
-
-    http_stop_listener();
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    esp_wifi_disconnect();
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    esp_wifi_connect();
-
-    http_set_restart_cooldown_ms(HTTP_WIFI_RESET_COOLDOWN_MS);
-    s_accept113_in_window = 0;
-    s_accept113_window_start_us = 0;
-    s_restart_in_progress = false;
-}
-#endif
-
 static void http_recovery_task(void *arg)
 {
     (void)arg;
     for (;;) {
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (!s_http_want_running) {
+        if (!s_http_want_running || !s_close_clients_requested || s_httpd == NULL) {
             continue;
         }
-
-#if CONFIG_MACRO_WIFI_ROLE_STA
-        if (s_http_need_wifi_reset && http_recovery_allowed()) {
-            http_wifi_lwip_reset();
-            continue;
-        }
+        const bool keep_ws = s_close_keep_ws;
+        s_close_clients_requested = false;
+        s_close_keep_ws = false;
+        s_last_close_clients_us = esp_timer_get_time();
+#if CONFIG_MACRO_WEB_USE_WS
+        const int ws_fd = keep_ws ? macro_ws_active_fd() : -1;
+#else
+        const int ws_fd = -1;
 #endif
-        if (s_http_need_wifi_reset && http_recovery_allowed()) {
-            /* SoftAP / non-STA: restart HTTP only (no 3 s Wi-Fi disconnect). */
-            ESP_LOGW(TAG, "Restarting HTTP listener (socket recovery)");
-            s_http_need_wifi_reset = false;
-            http_stop_listener();
-            vTaskDelay(pdMS_TO_TICKS(200));
-            http_server_start();
-            continue;
-        }
-
-        if (s_http_purge_only && s_httpd != NULL) {
-            http_purge_sessions_only();
-            continue;
-        }
-
-        if (s_http_restart_requested && s_httpd != NULL) {
-            http_purge_sessions_only();
-            continue;
-        }
-
-        if (!http_recovery_allowed()) {
-            continue;
-        }
-
-        if (s_httpd != NULL && s_http_started) {
-            continue;
-        }
-
-        ESP_LOGW(TAG, "HTTP listener down, bringing server back");
-        s_restart_in_progress = true;
-        http_server_start();
-        if (s_http_started && s_httpd != NULL) {
-            ESP_LOGI(TAG, "HTTP server online");
-            s_restart_in_progress = false;
-            s_http_need_wifi_reset = false;
-            s_accept113_in_window = 0;
-            s_accept113_window_start_us = 0;
-            continue;
-        }
-
-        ESP_LOGE(TAG, "HTTP recovery failed; retry in %d s", HTTP_RESTART_FAIL_COOLDOWN_MS / 1000);
-        http_set_restart_cooldown_ms(HTTP_RESTART_FAIL_COOLDOWN_MS);
-        s_restart_in_progress = false;
-#if CONFIG_MACRO_WIFI_ROLE_STA
-        s_http_need_wifi_reset = true;
-#endif
+        ESP_LOGW(TAG, "Closing HTTP clients (keep_ws=%d)", ws_fd >= 0 ? 1 : 0);
+        http_close_all_clients_except(ws_fd);
+        vTaskDelay(pdMS_TO_TICKS(300));
     }
 }
 
@@ -320,28 +260,12 @@ static void http_schedule_recovery(void)
 static void http_health_timer_cb(void *arg)
 {
     (void)arg;
-    if (!s_http_want_running) {
-        return;
-    }
-
-    /* Do not mass-close clients at max_open_sockets — lru_purge handles stale slots;
-     * closing all sessions mid-request caused wedged API until reboot. */
-
-    if (!http_recovery_allowed()) {
-        return;
-    }
-
-    if (s_http_purge_only) {
-        http_schedule_recovery();
-        return;
-    }
-
-    if (s_http_need_wifi_reset || s_http_restart_requested || (s_http_want_running && !s_http_started)) {
-        http_schedule_recovery();
+    if (s_http_want_running && !s_http_started && !s_reset_pending) {
+        macro_web_request_device_reset("http server not running");
     }
 }
 
-static void http_server_shutdown(void)
+__attribute__((unused)) static void http_server_shutdown(void)
 {
     s_http_want_running = false;
     if (s_http_health_timer != NULL) {
@@ -486,6 +410,37 @@ static void sta_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *d
     }
 }
 
+static void http_boot_task(void *arg)
+{
+    (void)arg;
+    if (!s_http_started) {
+        http_server_start();
+        if (s_http_started) {
+            esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+            if (netif) {
+                esp_netif_ip_info_t ip;
+                if (esp_netif_get_ip_info(netif, &ip) == ESP_OK) {
+                    ESP_LOGI(TAG, "HTTP ready at http://" IPSTR "/", IP2STR(&ip.ip));
+                }
+            }
+        }
+    }
+    s_http_boot_pending = false;
+    vTaskDelete(NULL);
+}
+
+static void http_defer_server_start(void)
+{
+    if (s_http_started || s_http_boot_pending) {
+        return;
+    }
+    s_http_boot_pending = true;
+    if (xTaskCreate(http_boot_task, "http_boot", HTTP_BOOT_STACK, NULL, 5, NULL) != pdPASS) {
+        s_http_boot_pending = false;
+        ESP_LOGE(TAG, "http_boot task create failed");
+    }
+}
+
 static void sta_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
@@ -495,10 +450,7 @@ static void sta_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     s_reconnect_delay_ms = 2000;
     ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&ev->ip_info.ip));
     if (!s_http_started) {
-        http_server_start();
-        if (s_http_started) {
-            ESP_LOGI(TAG, "Web UI: http://" IPSTR "/ (same LAN as router)", IP2STR(&ev->ip_info.ip));
-        }
+        http_defer_server_start();
     }
     if (s_net_ready) {
         xSemaphoreGive(s_net_ready);
@@ -908,7 +860,7 @@ static esp_err_t h_active_weapon_post(httpd_req_t *req)
     if (idx < 0) {
         idx = 0;
     }
-    macro_profile_http_set_active_weapon((uint8_t)idx);
+    macro_profile_http_set_active_weapon((uint16_t)idx);
     httpd_resp_set_type(req, "application/json");
     http_set_conn_close(req);
     return httpd_resp_sendstr(req, "{\"ok\":true}");
@@ -923,12 +875,22 @@ static esp_err_t h_toggle_macros_post(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+static esp_err_t h_conn_reset_post(httpd_req_t *req)
+{
+    (void)req;
+    macro_web_close_active_clients();
+    httpd_resp_set_type(req, "application/json");
+    http_set_conn_close(req);
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
 static void http_recovery_task_start(void)
 {
     if (s_http_recovery_task != NULL) {
         return;
     }
-    if (xTaskCreate(http_recovery_task, "http_recover", 4096, NULL, 5, &s_http_recovery_task) != pdPASS) {
+    if (xTaskCreate(http_recovery_task, "http_recover", HTTP_RECOVER_STACK, NULL, 5, &s_http_recovery_task) !=
+        pdPASS) {
         ESP_LOGE(TAG, "http recovery task create failed");
         s_http_recovery_task = NULL;
     }
@@ -951,35 +913,41 @@ static void http_server_start(void)
     /* lwIP often returns ENOPROTOOPT (109) for SO_LINGER on close. */
     cfg.enable_so_linger = false;
     /* Leave lwIP headroom for aborted refresh connections (not in httpd client list). */
-    cfg.max_open_sockets = 5;
+    cfg.max_open_sockets = 3;
     if (cfg.max_open_sockets > CONFIG_LWIP_MAX_SOCKETS - 6) {
         cfg.max_open_sockets = CONFIG_LWIP_MAX_SOCKETS - 6;
     }
     if (cfg.max_open_sockets < 3) {
         cfg.max_open_sockets = 3;
     }
+    if (CONFIG_LWIP_MAX_ACTIVE_TCP < 28) {
+        ESP_LOGW(TAG, "CONFIG_LWIP_MAX_ACTIVE_TCP=%d is low for web UI (recommend >= 32)",
+                 CONFIG_LWIP_MAX_ACTIVE_TCP);
+    }
+    if (CONFIG_LWIP_MAX_SOCKETS < 40) {
+        ESP_LOGE(TAG, "CONFIG_LWIP_MAX_SOCKETS=%d — run: idf.py build (need >= 40)", CONFIG_LWIP_MAX_SOCKETS);
+    }
     s_http_max_clients = cfg.max_open_sockets;
-    cfg.max_uri_handlers = 24;
-#if CONFIG_HTTPD_WS_SUPPORT
+    cfg.max_uri_handlers = 26;
+#if CONFIG_MACRO_WEB_USE_WS
     cfg.close_fn = macro_ws_httpd_close_cb;
 #endif
 
-    ESP_LOGI(TAG, "HTTP max_open_sockets=%d backlog=1 (CONFIG_LWIP_MAX_SOCKETS=%d)",
-             cfg.max_open_sockets, CONFIG_LWIP_MAX_SOCKETS);
+    ESP_LOGI(TAG, "HTTP max_open_sockets=%d backlog=%d (sockets=%d active_tcp=%d)",
+             cfg.max_open_sockets, cfg.backlog_conn, CONFIG_LWIP_MAX_SOCKETS,
+             CONFIG_LWIP_MAX_ACTIVE_TCP);
 
     esp_err_t ret = httpd_start(&s_httpd, &cfg);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "httpd_start failed: %s (lwIP may be out of sockets; cooldown %d s)",
-                 esp_err_to_name(ret), HTTP_RESTART_FAIL_COOLDOWN_MS / 1000);
+        ESP_LOGE(TAG, "httpd_start failed: %s (lwIP sockets=%d)", esp_err_to_name(ret),
+                 CONFIG_LWIP_MAX_SOCKETS);
         s_httpd = NULL;
         s_http_started = false;
-        http_set_restart_cooldown_ms(HTTP_RESTART_FAIL_COOLDOWN_MS);
-        s_http_need_wifi_reset = true;
-        http_schedule_recovery();
+        macro_web_request_device_reset("httpd_start failed");
         return;
     }
 
-#if CONFIG_HTTPD_WS_SUPPORT
+#if CONFIG_MACRO_WEB_USE_WS
     macro_ws_init(s_httpd);
 #endif
 
@@ -996,6 +964,7 @@ static void http_server_start(void)
     httpd_uri_t u_next = {.uri = "/api/next-script", .method = HTTP_POST, .handler = h_next_script_post, .user_ctx = NULL};
     httpd_uri_t u_weapon = {.uri = "/api/active-weapon", .method = HTTP_POST, .handler = h_active_weapon_post, .user_ctx = NULL};
     httpd_uri_t u_tog = {.uri = "/api/toggle-macros", .method = HTTP_POST, .handler = h_toggle_macros_post, .user_ctx = NULL};
+    httpd_uri_t u_reset = {.uri = "/api/conn-reset", .method = HTTP_POST, .handler = h_conn_reset_post, .user_ctx = NULL};
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_root));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_fav));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_ping));
@@ -1009,13 +978,14 @@ static void http_server_start(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_next));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_weapon));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_tog));
-#if CONFIG_HTTPD_WS_SUPPORT
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_reset));
+#if CONFIG_MACRO_WEB_USE_WS
     httpd_uri_t u_ws = {.uri = "/ws", .method = HTTP_GET, .handler = macro_ws_handler, .user_ctx = NULL,
                         .is_websocket = true};
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_httpd, &u_ws));
     ESP_LOGI(TAG, "HTTP server on port 80 (WebSocket /ws enabled)");
 #else
-    ESP_LOGI(TAG, "HTTP server on port 80 (HTTP only, enable CONFIG_HTTPD_WS_SUPPORT for /ws)");
+    ESP_LOGI(TAG, "HTTP server on port 80 (HTTP poll only)");
 #endif
 
     if (s_http_health_timer == NULL) {
@@ -1037,7 +1007,6 @@ static void http_server_start(void)
     }
 
     s_http_started = true;
-    s_http_restart_requested = false;
 }
 
 void macro_web_start(void)

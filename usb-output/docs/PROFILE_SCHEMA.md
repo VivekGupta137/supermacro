@@ -63,7 +63,7 @@ Profile JSON  →  parse at boot / upload  →  group_sequence in RAM  →  esp_
 | Groups / modes per active bank | **10** (`MAX_KEY_MODIFICATION_SEQUENCE`) |
 | Steps per group / mode | **100** (`MAX_KEY_MODIFICATION_EVENT`) |
 | `n` vs `steps` | **`n` must be ≤ `steps.length`** (strict: if `n` > step count, upload/parse fails) |
-| Weapon / script banks (v2/v3) | **4** (`MAX_MACRO_SCRIPTS`) |
+| Weapon / script banks (v2/v3) | **No fixed limit**; only the **active** bank is loaded in RAM (`CONFIG_MACRO_MAX_WEAPONS` optional cap) |
 | Profile file size | Menuconfig `CONFIG_MACRO_PROFILE_MAX_SIZE` (default **131072** / 128 KB) |
 
 **Dense prefix rule:** Groups are stored in array order `list[0]`, `list[1]`, … Firmware stops at the **first entry with `size == 0`**. Do not leave empty gaps between used groups.
@@ -75,7 +75,7 @@ Profile JSON  →  parse at boot / upload  →  group_sequence in RAM  →  esp_
 | Version | Best for |
 |---------|----------|
 | **v1** | Simple profiles: one list of macros, no weapon switching. |
-| **v2** | Several weapons (up to 4), switch active weapon with a hotkey; one trigger per macro in the active bank. |
+| **v2** | Several weapons (any count), switch active weapon with a hotkey; one trigger per macro in the active bank. |
 | **v3** | Same as v2 plus **multiple firing modes per weapon** (e.g. hipfire LMB-only vs ADS LMB+RMB) active at once, with exact button matching. |
 
 ```text
@@ -635,7 +635,7 @@ Adds up to **4 script banks** (weapons), **one active bank** at a time, and opti
 |-------|------|----------|---------|-------------|
 | `v` | number | **yes** | — | Must be `2`. |
 | `name` | string | no | `"flash"` | Profile display name. |
-| `scripts` | array | yes* | — | Weapon banks (max 4). *Required unless root `groups` is used. |
+| `scripts` | array | yes* | — | Weapon banks (no fixed max). *Required unless root `groups` is used. |
 | `groups` | array | yes* | — | Single-bank shortcut (same as one script with these groups). |
 | `activeScript` | number | no | `0` | Index into `scripts` loaded at boot (0-based). |
 | `macrosOn` | bool | no | `true` | Initial global enable for timed macro output. |
@@ -726,7 +726,7 @@ Set to `false` or omit to disable. Hotkeys are evaluated on **rising edge** only
 
 | Problem in v2 | v3 approach |
 |---------------|-------------|
-| Only one script bank active | Same (up to 4 weapons), but each weapon has **many modes** loaded at once |
+| Only one script bank active | Same (any number of weapons), but each weapon has **many modes** loaded at once |
 | LMB macro also runs during LMB+RMB (`chord` match) | `pressMode: "exact"` on hipfire (`b: 1`) |
 | Switching ADS / hipfire | Different `press` chords + `modeSet` stops the other mode |
 
@@ -737,7 +737,7 @@ All v2 root fields, plus:
 | Field | Type | Description |
 |-------|------|-------------|
 | `v` | number | Must be `3`. |
-| `weapons` | array | Preferred name for script banks (max 4). |
+| `weapons` | array | Preferred name for script banks (no fixed max). |
 | `scripts` | array | **Alias** for `weapons`. |
 | `activeWeapon` | number | **Alias** for `activeScript`. |
 | `nextWeapon` | object | **Alias** for `nextScript` (used if `nextScript` omitted). |
