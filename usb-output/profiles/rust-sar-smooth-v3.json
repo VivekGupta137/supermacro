@@ -1,0 +1,174 @@
+{
+  "v": 3,
+  "game": "rust",
+  "customprops": {
+    "fov": 70,
+    "ads-sens": 1
+  },
+  "activeWeapon": 0,
+  "eDPI": 640,
+  "patternEDPI": 624,
+  "humanize": {
+    "timingPct": 0,
+    "jitterUs": [
+      0,
+      0
+    ],
+    "mouse": 0,
+    "dripMs": 4
+  },
+  "macrosOn": true,
+  "nextWeapon": {
+    "mouse": {
+      "b": 0
+    }
+  },
+  "toggleMacros": {
+    "mouse": {
+      "b": 6
+    }
+  },
+  "name": "rust-sar-smooth-v3",
+  "weapons": [
+    {
+      "name": "sar-base",
+      "scale": 1.0,
+      "modes": [
+        {
+          "comment": "ADS LMB+RMB (REQUIRE_RIGHT_HELD)",
+          "name": "ads",
+          "modeScale": 1.0,
+          "press": {
+            "mouse": {
+              "b": 3
+            }
+          },
+          "n": 2,
+          "steps": [
+            {
+              "us": 175000,
+              "mouse": {
+                "x": 0,
+                "y": 26
+              }
+            },
+            {
+              "us": 175000,
+              "mouse": {
+                "x": 0,
+                "y": 26
+              }
+            }
+          ],
+          "triggerMode": "tap",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "name": "sar-ho",
+      "scale": 1.0,
+      "modes": [
+        {
+          "comment": "ADS LMB+RMB (REQUIRE_RIGHT_HELD)",
+          "name": "ads",
+          "modeScale": 1.0,
+          "press": {
+            "mouse": {
+              "b": 3
+            }
+          },
+          "n": 2,
+          "steps": [
+            {
+              "us": 175000,
+              "mouse": {
+                "x": 0,
+                "y": 22
+              }
+            },
+            {
+              "us": 175000,
+              "mouse": {
+                "x": 0,
+                "y": 22
+              }
+            }
+          ],
+          "triggerMode": "tap",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "name": "sar-ls",
+      "scale": 1.0,
+      "modes": [
+        {
+          "comment": "ADS LMB+RMB (REQUIRE_RIGHT_HELD)",
+          "name": "ads",
+          "modeScale": 1.0,
+          "press": {
+            "mouse": {
+              "b": 3
+            }
+          },
+          "n": 2,
+          "steps": [
+            {
+              "us": 175000,
+              "mouse": {
+                "x": 0,
+                "y": 4
+              }
+            },
+            {
+              "us": 175000,
+              "mouse": {
+                "x": 0,
+                "y": 4
+              }
+            }
+          ],
+          "triggerMode": "tap",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "name": "sar-ho-ls",
+      "scale": 1.0,
+      "modes": [
+        {
+          "comment": "ADS LMB+RMB (REQUIRE_RIGHT_HELD)",
+          "name": "ads",
+          "modeScale": 1.0,
+          "press": {
+            "mouse": {
+              "b": 3
+            }
+          },
+          "n": 2,
+          "steps": [
+            {
+              "us": 175000,
+              "mouse": {
+                "x": 0,
+                "y": 17
+              }
+            },
+            {
+              "us": 175000,
+              "mouse": {
+                "x": 0,
+                "y": 17
+              }
+            }
+          ],
+          "triggerMode": "tap",
+          "loop": false
+        }
+      ]
+    }
+  ]
+}

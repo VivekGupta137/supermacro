@@ -1,0 +1,174 @@
+{
+  "v": 3,
+  "game": "rust",
+  "customprops": {
+    "fov": 70,
+    "ads-sens": 1
+  },
+  "activeWeapon": 0,
+  "eDPI": 640,
+  "patternEDPI": 624,
+  "humanize": {
+    "timingPct": 0,
+    "jitterUs": [
+      0,
+      0
+    ],
+    "mouse": 0,
+    "dripMs": 4
+  },
+  "macrosOn": true,
+  "nextWeapon": {
+    "mouse": {
+      "b": 0
+    }
+  },
+  "toggleMacros": {
+    "mouse": {
+      "b": 6
+    }
+  },
+  "name": "rust-m39-smooth-v3",
+  "weapons": [
+    {
+      "name": "m39-base",
+      "scale": 1.0,
+      "modes": [
+        {
+          "comment": "ADS LMB+RMB (REQUIRE_RIGHT_HELD)",
+          "name": "ads",
+          "modeScale": 1.0,
+          "press": {
+            "mouse": {
+              "b": 3
+            }
+          },
+          "n": 2,
+          "steps": [
+            {
+              "us": 150000,
+              "mouse": {
+                "x": -16,
+                "y": 28
+              }
+            },
+            {
+              "us": 150000,
+              "mouse": {
+                "x": -16,
+                "y": 28
+              }
+            }
+          ],
+          "triggerMode": "tap",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "name": "m39-ho",
+      "scale": 1.0,
+      "modes": [
+        {
+          "comment": "ADS LMB+RMB (REQUIRE_RIGHT_HELD)",
+          "name": "ads",
+          "modeScale": 1.0,
+          "press": {
+            "mouse": {
+              "b": 3
+            }
+          },
+          "n": 2,
+          "steps": [
+            {
+              "us": 150000,
+              "mouse": {
+                "x": -10,
+                "y": 17
+              }
+            },
+            {
+              "us": 150000,
+              "mouse": {
+                "x": -10,
+                "y": 17
+              }
+            }
+          ],
+          "triggerMode": "tap",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "name": "m39-ls",
+      "scale": 1.0,
+      "modes": [
+        {
+          "comment": "ADS LMB+RMB (REQUIRE_RIGHT_HELD)",
+          "name": "ads",
+          "modeScale": 1.0,
+          "press": {
+            "mouse": {
+              "b": 3
+            }
+          },
+          "n": 2,
+          "steps": [
+            {
+              "us": 150000,
+              "mouse": {
+                "x": -2,
+                "y": 3
+              }
+            },
+            {
+              "us": 150000,
+              "mouse": {
+                "x": -2,
+                "y": 3
+              }
+            }
+          ],
+          "triggerMode": "tap",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "name": "m39-ho-ls",
+      "scale": 1.0,
+      "modes": [
+        {
+          "comment": "ADS LMB+RMB (REQUIRE_RIGHT_HELD)",
+          "name": "ads",
+          "modeScale": 1.0,
+          "press": {
+            "mouse": {
+              "b": 3
+            }
+          },
+          "n": 2,
+          "steps": [
+            {
+              "us": 150000,
+              "mouse": {
+                "x": -8,
+                "y": 14
+              }
+            },
+            {
+              "us": 150000,
+              "mouse": {
+                "x": -8,
+                "y": 14
+              }
+            }
+          ],
+          "triggerMode": "tap",
+          "loop": false
+        }
+      ]
+    }
+  ]
+}

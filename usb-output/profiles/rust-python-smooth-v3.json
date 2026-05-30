@@ -1,0 +1,174 @@
+{
+  "v": 3,
+  "game": "rust",
+  "customprops": {
+    "fov": 70,
+    "ads-sens": 1
+  },
+  "activeWeapon": 0,
+  "eDPI": 640,
+  "patternEDPI": 624,
+  "humanize": {
+    "timingPct": 0,
+    "jitterUs": [
+      0,
+      0
+    ],
+    "mouse": 0,
+    "dripMs": 4
+  },
+  "macrosOn": true,
+  "nextWeapon": {
+    "mouse": {
+      "b": 0
+    }
+  },
+  "toggleMacros": {
+    "mouse": {
+      "b": 6
+    }
+  },
+  "name": "rust-python-smooth-v3",
+  "weapons": [
+    {
+      "name": "python-base",
+      "scale": 1.0,
+      "modes": [
+        {
+          "comment": "ADS LMB+RMB (REQUIRE_RIGHT_HELD)",
+          "name": "ads",
+          "modeScale": 1.0,
+          "press": {
+            "mouse": {
+              "b": 3
+            }
+          },
+          "n": 2,
+          "steps": [
+            {
+              "us": 150000,
+              "mouse": {
+                "x": 0,
+                "y": 102
+              }
+            },
+            {
+              "us": 150000,
+              "mouse": {
+                "x": 0,
+                "y": 102
+              }
+            }
+          ],
+          "triggerMode": "tap",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "name": "python-ho",
+      "scale": 1.0,
+      "modes": [
+        {
+          "comment": "ADS LMB+RMB (REQUIRE_RIGHT_HELD)",
+          "name": "ads",
+          "modeScale": 1.0,
+          "press": {
+            "mouse": {
+              "b": 3
+            }
+          },
+          "n": 2,
+          "steps": [
+            {
+              "us": 150000,
+              "mouse": {
+                "x": 0,
+                "y": 63
+              }
+            },
+            {
+              "us": 150000,
+              "mouse": {
+                "x": 0,
+                "y": 63
+              }
+            }
+          ],
+          "triggerMode": "tap",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "name": "python-ls",
+      "scale": 1.0,
+      "modes": [
+        {
+          "comment": "ADS LMB+RMB (REQUIRE_RIGHT_HELD)",
+          "name": "ads",
+          "modeScale": 1.0,
+          "press": {
+            "mouse": {
+              "b": 3
+            }
+          },
+          "n": 2,
+          "steps": [
+            {
+              "us": 150000,
+              "mouse": {
+                "x": 0,
+                "y": 10
+              }
+            },
+            {
+              "us": 150000,
+              "mouse": {
+                "x": 0,
+                "y": 10
+              }
+            }
+          ],
+          "triggerMode": "tap",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "name": "python-ho-ls",
+      "scale": 1.0,
+      "modes": [
+        {
+          "comment": "ADS LMB+RMB (REQUIRE_RIGHT_HELD)",
+          "name": "ads",
+          "modeScale": 1.0,
+          "press": {
+            "mouse": {
+              "b": 3
+            }
+          },
+          "n": 2,
+          "steps": [
+            {
+              "us": 150000,
+              "mouse": {
+                "x": 0,
+                "y": 51
+              }
+            },
+            {
+              "us": 150000,
+              "mouse": {
+                "x": 0,
+                "y": 51
+              }
+            }
+          ],
+          "triggerMode": "tap",
+          "loop": false
+        }
+      ]
+    }
+  ]
+}
