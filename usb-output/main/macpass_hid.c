@@ -63,7 +63,7 @@ static void hid_spread_reset_segment(void)
     s_spread_end_us = 0;
 }
 
-/** Time-linear lerp: ideal = target * elapsed / duration; send floor(ideal) - sent (Python SmoothMove). */
+/** Time-linear lerp: ideal = target * elapsed / duration; send ideal - sent per drip. */
 static int8_t hid_take_drip_axis_lerp(int16_t target, int16_t *sent)
 {
     int32_t remain = (int32_t)target - (int32_t)*sent;
@@ -93,38 +93,39 @@ static int8_t hid_take_drip_axis_lerp(int16_t target, int16_t *sent)
     if (elapsed >= dur) {
         move = remain;
     }
-    if (move == 0) {
-        if (remain == 0) {
-            return 0;
-        }
-        if (*sent > 0) {
-            /* sent ahead of ideal curve; wait for lerp to catch up */
-            return 0;
-        }
-        /* sent==0: lerp is 0 at t≈0 — use time-proportional slice (min ±1). */
-        const uint32_t drip_us = hid_mouse_drip_interval_us();
-        if (dur > 0 && drip_us > 0) {
-            int32_t abs_remain = remain > 0 ? remain : -remain;
-            int32_t slice = (int32_t)(((int64_t)abs_remain * (int64_t)drip_us) / dur);
-            if (slice == 0) {
-                slice = 1;
-            }
-            move = (remain > 0) ? slice : -slice;
-        } else {
-            return 0;
-        }
-    } else if (move < 0 && remain > 0) {
-        /* sent ahead of ideal; do not dump the full remainder in one tick */
+
+    /* sent ahead of ideal curve (opposite sign from remaining distance) */
+    if ((remain > 0 && move < 0) || (remain < 0 && move > 0)) {
         return 0;
     }
 
-    if (move > 0) {
+    if (move == 0) {
+        /* Integer lerp stalls on small deltas — drip a time-proportional slice. */
+        const uint32_t drip_us = hid_mouse_drip_interval_us();
+        if (drip_us == 0) {
+            return 0;
+        }
+        int32_t abs_remain = remain > 0 ? remain : -remain;
+        int32_t slice = (int32_t)(((int64_t)abs_remain * (int64_t)drip_us) / dur);
+        if (slice == 0) {
+            slice = 1;
+        }
+        move = (remain > 0) ? slice : -slice;
+    }
+
+    /* Same-sign clamp only (do not mix signs). */
+    if (remain > 0) {
         if (move > remain) {
             move = remain;
         }
-    } else if (move < 0 && remain < 0 && move < remain) {
+    } else if (move < remain) {
         move = remain;
     }
+
+    if (move == 0) {
+        return 0;
+    }
+
     move = (int32_t)clamp_i32_to_i8_mouse((int)move);
     *sent += (int16_t)move;
     return (int8_t)move;
