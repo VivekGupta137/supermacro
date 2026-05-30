@@ -74,7 +74,7 @@ static void macro_reset_mode_set_peers(int started_idx, uint8_t mode_set)
             continue;
         }
         if (sequence_is_running(peer)) {
-            reset_sequence(peer);
+            reset_sequence(peer, true);
         }
     }
 }
@@ -136,7 +136,7 @@ static void macro_press_sync_running_sequences(void)
             continue;
         }
         if (!mode_press_held(&last_mouse_report, &last_keyboard_report[0], seq)) {
-            reset_sequence(seq);
+            reset_sequence(seq, true);
         }
     }
 }
@@ -239,7 +239,7 @@ static void macro_try_start_press_mode(int started_idx, key_modification_sequenc
     perf_stat_bump(PERF_MACRO_START);
 #endif
     macro_reset_mode_set_peers(started_idx, sequence->mode_set);
-    reset_sequence(sequence);
+    reset_sequence(sequence, true);
     macro_queue_start(sequence);
 }
 
@@ -387,7 +387,7 @@ void macro_posthook_transmission(hid_transmit_t* report){
                 ESP_LOGI(LOG_TITLE, "macro start: %s (keyboard release)", sequence->timer_args.name);
                 perf_stat_bump(PERF_MACRO_START);
 #endif
-                reset_sequence(sequence);
+                reset_sequence(sequence, true);
                 macro_queue_start(sequence);
             }
             // If a recording sequence
@@ -402,7 +402,7 @@ void macro_posthook_transmission(hid_transmit_t* report){
                 #if DEBUG_LOG
                 ESP_LOGI(pcTaskGetName(NULL), "posthook(): Starting keyboard save macro: %s", sequence->timer_args.name);
                 #endif
-                reset_sequence(sequence);
+                reset_sequence(sequence, true);
                 sequence->is_recording = true;
             }
         }
@@ -440,7 +440,7 @@ void macro_sequence_callback(void* arg) {
     xSemaphoreTake(s_seq_mux, portMAX_DELAY);
 
     if (!macro_profile_macros_enabled()) {
-        reset_sequence(key_seq);
+        reset_sequence(key_seq, true);
         xSemaphoreGive(s_seq_mux);
         return;
     }
@@ -507,7 +507,8 @@ void macro_sequence_callback(void* arg) {
     key_seq->pos = (uint8_t)(step_idx + 1);
 
     if (key_seq->pos >= key_seq->size) {
-        reset_sequence(key_seq);
+        /* Keep dripping the step we just fed; release/press-sync cancels spread later. */
+        reset_sequence(key_seq, false);
         if (!key_seq->loop || key_seq->press_tap) {
             xSemaphoreGive(s_seq_mux);
             return;
@@ -518,7 +519,7 @@ void macro_sequence_callback(void* arg) {
 
     if (key_seq->loop && !key_seq->press_tap && key_seq->event_press.header != 0 &&
         !mode_press_held(&last_mouse_report, &last_keyboard_report[0], key_seq)) {
-        reset_sequence(key_seq);
+        reset_sequence(key_seq, true);
         xSemaphoreGive(s_seq_mux);
         return;
     }

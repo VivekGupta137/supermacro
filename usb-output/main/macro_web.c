@@ -524,6 +524,11 @@ static bool wifi_start_sta(esp_netif_t **out_netif)
     wifi.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
     wifi.sta.failure_retry_cnt = 5;
 
+    ESP_LOGI(TAG, "STA credentials: ssid=\"%s\" (len=%u), password=\"%s\" (len=%u)",
+             CONFIG_MACRO_WIFI_STA_SSID,
+             (unsigned)strlen(CONFIG_MACRO_WIFI_STA_SSID),
+             pw,
+             (unsigned)pwlen);
     ESP_LOGI(TAG, "Connecting to SSID \"%s\" (len=%u, %s, 2.4 GHz)",
              CONFIG_MACRO_WIFI_STA_SSID,
              (unsigned)strlen(CONFIG_MACRO_WIFI_STA_SSID),

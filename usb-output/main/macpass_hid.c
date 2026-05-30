@@ -94,6 +94,27 @@ static int8_t hid_take_drip_axis_lerp(int16_t target, int16_t *sent)
         move = remain;
     }
     if (move == 0) {
+        if (remain == 0) {
+            return 0;
+        }
+        if (*sent > 0) {
+            /* sent ahead of ideal curve; wait for lerp to catch up */
+            return 0;
+        }
+        /* sent==0: lerp is 0 at t≈0 — use time-proportional slice (min ±1). */
+        const uint32_t drip_us = hid_mouse_drip_interval_us();
+        if (dur > 0 && drip_us > 0) {
+            int32_t abs_remain = remain > 0 ? remain : -remain;
+            int32_t slice = (int32_t)(((int64_t)abs_remain * (int64_t)drip_us) / dur);
+            if (slice == 0) {
+                slice = 1;
+            }
+            move = (remain > 0) ? slice : -slice;
+        } else {
+            return 0;
+        }
+    } else if (move < 0 && remain > 0) {
+        /* sent ahead of ideal; do not dump the full remainder in one tick */
         return 0;
     }
 
@@ -101,7 +122,7 @@ static int8_t hid_take_drip_axis_lerp(int16_t target, int16_t *sent)
         if (move > remain) {
             move = remain;
         }
-    } else if (move < remain) {
+    } else if (move < 0 && remain < 0 && move < remain) {
         move = remain;
     }
     move = (int32_t)clamp_i32_to_i8_mouse((int)move);
@@ -173,14 +194,11 @@ void hid_mouse_drip_apply_interval(void)
 }
 
 
-static void hid_drip_timer_cb(void *arg)
+static bool hid_macro_emit_drip_report(void)
 {
-    (void)arg;
     if (!hid_spread_pending()) {
-        hid_drip_timer_stop_if_idle();
-        return;
+        return false;
     }
-
 
     hid_transmit_t report;
     report.header = HEADER_HID_MOUSE;
@@ -191,7 +209,21 @@ static void hid_drip_timer_cb(void *arg)
     report.event.mouse.pan = 0;
     if (hid_mouse_merge_spread_drip(&report.event.mouse)) {
         hid_queue_report(report);
+        return true;
     }
+    return false;
+}
+
+
+static void hid_drip_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!hid_spread_pending()) {
+        hid_drip_timer_stop_if_idle();
+        return;
+    }
+
+    (void)hid_macro_emit_drip_report();
     hid_drip_timer_stop_if_idle();
 }
 
@@ -289,6 +321,7 @@ void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan,
     s_last_drip_us = 0;
 
     hid_drip_timer_ensure_running();
+    (void)hid_macro_emit_drip_report();
     hid_wake_pump();
 }
 

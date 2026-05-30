@@ -266,7 +266,9 @@ static inline void add_mouse_movement_delta(hid_mouse_report_t *dst, const hid_m
     dst->buttons |= src.buttons;
 }
 
-static inline void reset_sequence(key_modification_sequence_t* sequence){
+/** Reset step index and timer. Cancel in-flight mouse spread only when stopping (not on loop wrap). */
+static inline void reset_sequence(key_modification_sequence_t *sequence, bool cancel_mouse_spread)
+{
     if (sequence->timer) {
         esp_timer_stop(sequence->timer);
     }
@@ -275,7 +277,9 @@ static inline void reset_sequence(key_modification_sequence_t* sequence){
     sequence->started_time = esp_timer_get_time();
     sequence->waited_sum = 0;
     sequence->is_recording = false;
-    macro_after_sequence_reset();
+    if (cancel_mouse_spread) {
+        macro_after_sequence_reset();
+    }
 }
 
 static inline void add_keyboard_record(key_modification_sequence_t* sequence, const hid_transmit_t report){
