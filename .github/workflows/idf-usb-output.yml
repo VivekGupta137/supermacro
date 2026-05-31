@@ -1,20 +1,26 @@
-name: Build USB-Output directory for ESP32-S3
+name: Build USB-Output (ESP32-S3)
 
 on:
   push:
-    branches: [ "**" ]
+    branches: ["**"]
+    paths:
+      - "usb-output/**"
+      - ".github/workflows/idf-usb-output.yml"
+  pull_request:
+    paths:
+      - "usb-output/**"
+      - ".github/workflows/idf-usb-output.yml"
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
-      with:
-        submodules: 'recursive'
-    - name: esp-idf build
-      uses: espressif/esp-idf-ci-action@v1
-      with:
-        esp_idf_version: v5.5
-        target: esp32s3
-        path: 'usb-output'
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ESP-IDF build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32s3
+          path: usb-output

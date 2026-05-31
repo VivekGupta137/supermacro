@@ -1,20 +1,26 @@
-name: Build USB-Input directory for ESP32-S3
+name: Build USB-Input (ESP32-S3)
 
 on:
   push:
-    branches: [ "**" ]
+    branches: ["**"]
+    paths:
+      - "usb-input/**"
+      - ".github/workflows/idf-usb-input.yml"
+  pull_request:
+    paths:
+      - "usb-input/**"
+      - ".github/workflows/idf-usb-input.yml"
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
-      with:
-        submodules: 'recursive'
-    - name: esp-idf build
-      uses: espressif/esp-idf-ci-action@v1
-      with:
-        esp_idf_version: v5.5.1
-        target: esp32s3
-        path: 'usb-input'
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ESP-IDF build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32s3
+          path: usb-input
