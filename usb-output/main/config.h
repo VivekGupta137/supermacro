@@ -33,9 +33,7 @@
 /** Max |x|/|y|/|w|/|p| per profile step at parse (USB still int8 per report). */
 #define MACRO_STEP_MOUSE_AXIS_MAX 1024
 
-// Throttled SPI/macro/USB stats (one line per second when enabled). Off by default — UART is slow.
-#define USB_OUTPUT_PERF_LOG_ENABLE 0
-#define USB_OUTPUT_PERF_LOG_WINDOW_MS 1000
+// SPI/macro/USB perf stats: menuconfig → USB output performance (default off, IMP-9).
 
 // ---
 // --- TinyUSB descriptors

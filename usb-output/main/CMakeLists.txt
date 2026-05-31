@@ -9,8 +9,11 @@ set(srcs
     "macro_defaults.c"
     "macro_profile.c"
     "macro_web.c"
-    "perf_log.c"
     )
+
+if(CONFIG_USB_OUTPUT_PERF_LOG)
+    list(APPEND srcs "perf_log.c")
+endif()
 
 if(CONFIG_MACRO_WEB_UI)
     if(CONFIG_MACRO_WEB_USE_WS)

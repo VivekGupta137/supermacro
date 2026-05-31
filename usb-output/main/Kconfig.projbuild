@@ -1,3 +1,21 @@
+menu "USB output performance"
+
+    config USB_OUTPUT_PERF_LOG
+        bool "Throttled SPI/macro/USB perf stats on UART"
+        default n
+        help
+            Logs one aggregated line per second during HID passthrough.
+            UART traffic can delay macro step timers and worsen spray consistency.
+            Keep disabled for gameplay and consistency testing (IMP-9).
+
+    config USB_OUTPUT_PERF_LOG_WINDOW_MS
+        int "Perf log aggregation window (ms)"
+        depends on USB_OUTPUT_PERF_LOG
+        default 1000
+        range 250 10000
+
+endmenu
+
 menu "Macro profile / web UI"
 
     config MACRO_WEB_UI

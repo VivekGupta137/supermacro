@@ -2,6 +2,9 @@
 # Espressif IoT Development Framework (ESP-IDF) Project Minimal Configuration
 #
 
+# IMP-9: UART perf stats off during spray (idf.py menuconfig → USB output performance to enable)
+# CONFIG_USB_OUTPUT_PERF_LOG is not set
+
 # Force QIO flash for maximum performance
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 
