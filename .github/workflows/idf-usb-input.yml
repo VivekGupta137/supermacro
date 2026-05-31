@@ -24,3 +24,39 @@ jobs:
           esp_idf_version: v5.5.1
           target: esp32s3
           path: usb-input
+
+      - name: Package firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT=usb-input
+          ARTIFACT_DIR="${GITHUB_WORKSPACE}/firmware-artifact"
+          BUILD_DIR="${GITHUB_WORKSPACE}/${PROJECT}/build"
+          mkdir -p "${ARTIFACT_DIR}"
+          cp "${BUILD_DIR}/bootloader/bootloader.bin" "${ARTIFACT_DIR}/"
+          cp "${BUILD_DIR}/partition_table/partition-table.bin" "${ARTIFACT_DIR}/"
+          cp "${BUILD_DIR}/usb-keyboard-input.bin" "${ARTIFACT_DIR}/"
+          [ -f "${BUILD_DIR}/flasher_args.json" ] && cp "${BUILD_DIR}/flasher_args.json" "${ARTIFACT_DIR}/"
+          [ -f "${BUILD_DIR}/flash_args" ] && cp "${BUILD_DIR}/flash_args" "${ARTIFACT_DIR}/"
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            -w "/workspace/${PROJECT}/build" \
+            espressif/idf:v5.5.1 \
+            bash -c '. $IDF_PATH/export.sh && esptool.py --chip esp32s3 merge_bin -o /workspace/firmware-artifact/firmware-merged.bin @flash_args'
+          cat > "${ARTIFACT_DIR}/README.txt" << 'EOF'
+          USB-Input firmware (ESP32-S3)
+
+          firmware-merged.bin — single image, flash at 0x0:
+            esptool.py --chip esp32s3 -p PORT write_flash 0x0 firmware-merged.bin
+
+          Or flash components from this folder:
+            esptool.py --chip esp32s3 -p PORT write_flash @flash_args
+          EOF
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: usb-input-esp32s3
+          path: firmware-artifact/
+          if-no-files-found: error
+          retention-days: 90
