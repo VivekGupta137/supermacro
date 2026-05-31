@@ -274,6 +274,46 @@ static void hid_macro_send_immediate_step16(int16_t x, int16_t y, int16_t wheel,
 }
 
 
+void hid_macro_flush_mouse_spread(void)
+{
+    if (!hid_spread_pending()) {
+        return;
+    }
+
+
+    if (!hid_mouse_spread_enabled()) {
+        int16_t rx = (int16_t)((int32_t)s_target_mx - (int32_t)s_sent_mx);
+        int16_t ry = (int16_t)((int32_t)s_target_my - (int32_t)s_sent_my);
+        int16_t rw = (int16_t)((int32_t)s_target_mw - (int32_t)s_sent_mw);
+        int16_t rp = (int16_t)((int32_t)s_target_mp - (int32_t)s_sent_mp);
+        hid_macro_send_immediate_step16(rx, ry, rw, rp);
+        hid_spread_reset_segment();
+        s_last_drip_us = 0;
+        hid_drip_timer_stop_if_idle();
+        return;
+    }
+
+
+    /* Force completion: set elapsed to end and emit until sent == target. */
+    s_spread_end_us = esp_timer_get_time();
+    s_last_drip_us = 0;
+    for (unsigned n = 0; n < 64u && hid_spread_pending(); n++) {
+        (void)hid_macro_emit_drip_report();
+    }
+    /* Any int8 rounding residue: immediate send. */
+    if (hid_spread_pending()) {
+        int16_t rx = (int16_t)((int32_t)s_target_mx - (int32_t)s_sent_mx);
+        int16_t ry = (int16_t)((int32_t)s_target_my - (int32_t)s_sent_my);
+        int16_t rw = (int16_t)((int32_t)s_target_mw - (int32_t)s_sent_mw);
+        int16_t rp = (int16_t)((int32_t)s_target_mp - (int32_t)s_sent_mp);
+        hid_macro_send_immediate_step16(rx, ry, rw, rp);
+    }
+    hid_spread_reset_segment();
+    s_last_drip_us = 0;
+    hid_drip_timer_stop_if_idle();
+}
+
+
 void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan, uint32_t spread_us)
 {
     if (x == 0 && y == 0 && wheel == 0 && pan == 0) {

@@ -487,6 +487,10 @@ void macro_sequence_callback(void* arg) {
         int16_t mx, my, mw, mp;
         macro_step_mouse_deltas(step_ev, &mx, &my, &mw, &mp);
         macro_profile_apply_mouse_step_jitter(&mx, &my);
+
+        /* IMP-2: complete prior bullet spread before starting this step. */
+        hid_macro_flush_mouse_spread();
+
         const uint32_t nominal_us = step_ev->duration;
         step_delay_us = macro_profile_step_delay_us(nominal_us);
         step_delay_valid = true;
