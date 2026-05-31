@@ -8,7 +8,9 @@
 #include "esp_timer.h"
 
 
-// Queues: mouse keeps only the latest report; keyboard preserves order.
+#define HID_MOUSE_QUEUE_LEN 16
+
+// Queues: mouse FIFO (macro drips); keyboard preserves order.
 QueueHandle_t global_hid_mouse_queue = NULL;
 QueueHandle_t global_hid_keyboard_queue = NULL;
 
@@ -29,6 +31,10 @@ static int64_t s_spread_start_us;
 static int64_t s_spread_end_us;
 static int64_t s_last_drip_us;
 static esp_timer_handle_t s_drip_timer;
+
+/** Latest SPI button-only report (zero movement); coalesced, not queued in FIFO. */
+static hid_transmit_t s_pending_button_only_report;
+static bool s_pending_button_only;
 
 
 static void hid_queue_report(hid_transmit_t report);
@@ -377,7 +383,19 @@ static void hid_queue_report(hid_transmit_t report)
 
     if (report.header == HEADER_HID_MOUSE) {
         if (global_hid_mouse_queue != NULL) {
-            xQueueOverwrite(global_hid_mouse_queue, &report);
+            /* Passthrough from SPI: coalesce button-only (xQueueOverwrite is depth-1 only). */
+            if (report.event.mouse.x == 0 && report.event.mouse.y == 0 &&
+                report.event.mouse.wheel == 0 && report.event.mouse.pan == 0) {
+                s_pending_button_only_report = report;
+                s_pending_button_only = true;
+            } else {
+                if (xQueueSend(global_hid_mouse_queue, &report, 0) != pdTRUE) {
+                    /* Queue full: drop oldest, retry once. */
+                    hid_transmit_t drop;
+                    (void)xQueueReceive(global_hid_mouse_queue, &drop, 0);
+                    (void)xQueueSend(global_hid_mouse_queue, &report, 0);
+                }
+            }
             queued = true;
         }
     } else if (global_hid_keyboard_queue != NULL) {
@@ -413,7 +431,15 @@ static void hid_drain_all_pending(void)
         if (xQueueReceive(global_hid_mouse_queue, &report, 0) == pdTRUE) {
             work = true;
             if (!hid_send_report(&report)) {
-                (void)xQueueOverwrite(global_hid_mouse_queue, &report);
+                (void)xQueueSendToFront(global_hid_mouse_queue, &report, 0);
+            }
+        }
+
+
+        if (s_pending_button_only) {
+            work = true;
+            if (hid_send_report(&s_pending_button_only_report)) {
+                s_pending_button_only = false;
             }
         }
 
@@ -440,7 +466,7 @@ void hid_task_multiplexer(void *pvParameters)
 
 void hid_init_multiplexer()
 {
-    global_hid_mouse_queue = xQueueCreate(1, sizeof(hid_transmit_t));
+    global_hid_mouse_queue = xQueueCreate(HID_MOUSE_QUEUE_LEN, sizeof(hid_transmit_t));
     global_hid_keyboard_queue = xQueueCreate(16, sizeof(hid_transmit_t));
 
 
