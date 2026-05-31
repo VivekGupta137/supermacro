@@ -178,31 +178,20 @@ static void macro_arm_step_timer(key_modification_sequence_t *sequence, uint32_t
         esp_timer_start_once(sequence->timer, 1);
         return;
     }
-    int64_t now = esp_timer_get_time();
-    sequence->waited_sum += (int64_t)delay_us;
-    int64_t target = sequence->started_time + sequence->waited_sum;
 
+    int64_t now = esp_timer_get_time();
+
+    /* Schedule from last step fire + nominal delay (recoil-smoothing-2 style). */
+    if (sequence->last_step_fire_us == 0) {
+        sequence->last_step_fire_us = now;
+    }
+    int64_t target = sequence->last_step_fire_us + (int64_t)delay_us;
     if (target > now) {
         esp_timer_start_once(sequence->timer, (uint64_t)(target - now));
-        return;
-    }
-
-    /* Late tick */
-    if (macro_profile_humanize_timing_active()) {
+    } else if (macro_profile_humanize_timing_active()) {
         esp_timer_start_once(sequence->timer, macro_profile_catchup_delay_us(delay_us));
     } else {
-        /* IMP-4: fire next step on schedule; do not compress to 10 ms. */
-        int64_t lag = now - target;
-        if (lag > (int64_t)delay_us) {
-            /* Very late: skip to next ideal slot (optional soft resync). */
-            sequence->waited_sum += ((lag / (int64_t)delay_us) * (int64_t)delay_us);
-            target = sequence->started_time + sequence->waited_sum;
-        }
-        if (target > now) {
-            esp_timer_start_once(sequence->timer, (uint64_t)(target - now));
-        } else {
-            esp_timer_start_once(sequence->timer, 1);
-        }
+        esp_timer_start_once(sequence->timer, 1);
     }
 }
 
@@ -528,6 +517,7 @@ void macro_sequence_callback(void* arg) {
         step_delay_us = macro_profile_step_delay_us(nominal_us);
         step_delay_valid = true;
         hid_macro_feed_mouse_step(mx, my, mw, mp, nominal_us);
+        key_seq->last_step_fire_us = esp_timer_get_time();
 #if USB_OUTPUT_PERF_LOG_ENABLE
         perf_stat_bump(PERF_MACRO_TICK_MOUSE);
 #endif

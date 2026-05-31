@@ -276,6 +276,7 @@ static inline void reset_sequence(key_modification_sequence_t *sequence, bool ca
     sequence->previous_key.header = 0;
     sequence->started_time = esp_timer_get_time();
     sequence->waited_sum = 0;
+    sequence->last_step_fire_us = 0;
     sequence->is_recording = false;
     if (cancel_mouse_spread) {
         macro_after_sequence_reset();
