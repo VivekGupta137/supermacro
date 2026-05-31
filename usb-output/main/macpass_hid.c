@@ -327,38 +327,18 @@ void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan,
     }
 
 
+    /* IMP-3: discard unfinished prior segment (IMP-2 should have flushed). */
+    if (hid_spread_pending()) {
+        hid_macro_flush_mouse_spread();
+    }
+
+
     int64_t now = esp_timer_get_time();
 
-    /* Fold unfinished prior segment into this bullet (per-bullet SmoothMove). */
-    int32_t tx = (int32_t)x + ((int32_t)s_target_mx - (int32_t)s_sent_mx);
-    int32_t ty = (int32_t)y + ((int32_t)s_target_my - (int32_t)s_sent_my);
-    int32_t tw = (int32_t)wheel + ((int32_t)s_target_mw - (int32_t)s_sent_mw);
-    int32_t tp = (int32_t)pan + ((int32_t)s_target_mp - (int32_t)s_sent_mp);
-    if (tx > 32767) {
-        tx = 32767;
-    } else if (tx < -32768) {
-        tx = -32768;
-    }
-    if (ty > 32767) {
-        ty = 32767;
-    } else if (ty < -32768) {
-        ty = -32768;
-    }
-    if (tw > 32767) {
-        tw = 32767;
-    } else if (tw < -32768) {
-        tw = -32768;
-    }
-    if (tp > 32767) {
-        tp = 32767;
-    } else if (tp < -32768) {
-        tp = -32768;
-    }
-
-    s_target_mx = (int16_t)tx;
-    s_target_my = (int16_t)ty;
-    s_target_mw = (int16_t)tw;
-    s_target_mp = (int16_t)tp;
+    s_target_mx = x;
+    s_target_my = y;
+    s_target_mw = wheel;
+    s_target_mp = pan;
     s_sent_mx = s_sent_my = s_sent_mw = s_sent_mp = 0;
     s_spread_start_us = now;
     if (spread_us < 1000u) {
