@@ -91,6 +91,20 @@ uint32_t macro_profile_catchup_delay_us(uint32_t nominal_us)
     return delay;
 }
 
+bool macro_profile_humanize_timing_active(void)
+{
+    if (!s_humanize.enabled) {
+        return false;
+    }
+    if (s_humanize.timing_pct > 0) {
+        return true;
+    }
+    if (s_humanize.jitter_max_us > 0 || s_humanize.jitter_min_us > 0) {
+        return true;
+    }
+    return false;
+}
+
 void macro_profile_apply_mouse_jitter(hid_mouse_report_t *m)
 {
     if (!s_humanize.enabled || s_humanize.mouse_jitter == 0 || m == NULL) {

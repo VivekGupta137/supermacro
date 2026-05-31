@@ -34,7 +34,7 @@
 #define MACRO_STEP_MOUSE_AXIS_MAX 1024
 
 // Throttled SPI/macro/USB stats (one line per second when enabled). Off by default — UART is slow.
-#define USB_OUTPUT_PERF_LOG_ENABLE 1
+#define USB_OUTPUT_PERF_LOG_ENABLE 0
 #define USB_OUTPUT_PERF_LOG_WINDOW_MS 1000
 
 // ---

@@ -33,6 +33,8 @@ void macro_profile_build_status_json(char *buf, size_t buflen);
 uint32_t macro_profile_step_delay_us(uint32_t nominal_us);
 /** Delay when a tick is late — avoids 1 ms catch-up bursts. */
 uint32_t macro_profile_catchup_delay_us(uint32_t nominal_us);
+/** True when profile humanize adds random bullet delay (timingPct or jitterUs). */
+bool macro_profile_humanize_timing_active(void);
 /** Optional ±1..N pixel noise on macro mouse deltas when enabled in profile. */
 void macro_profile_apply_mouse_jitter(hid_mouse_report_t *m);
 /** Same for int16 recoil step deltas (`x` / `y` only). */

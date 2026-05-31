@@ -181,10 +181,28 @@ static void macro_arm_step_timer(key_modification_sequence_t *sequence, uint32_t
     int64_t now = esp_timer_get_time();
     sequence->waited_sum += (int64_t)delay_us;
     int64_t target = sequence->started_time + sequence->waited_sum;
+
     if (target > now) {
         esp_timer_start_once(sequence->timer, (uint64_t)(target - now));
-    } else {
+        return;
+    }
+
+    /* Late tick */
+    if (macro_profile_humanize_timing_active()) {
         esp_timer_start_once(sequence->timer, macro_profile_catchup_delay_us(delay_us));
+    } else {
+        /* IMP-4: fire next step on schedule; do not compress to 10 ms. */
+        int64_t lag = now - target;
+        if (lag > (int64_t)delay_us) {
+            /* Very late: skip to next ideal slot (optional soft resync). */
+            sequence->waited_sum += ((lag / (int64_t)delay_us) * (int64_t)delay_us);
+            target = sequence->started_time + sequence->waited_sum;
+        }
+        if (target > now) {
+            esp_timer_start_once(sequence->timer, (uint64_t)(target - now));
+        } else {
+            esp_timer_start_once(sequence->timer, 1);
+        }
     }
 }
 
@@ -244,6 +262,10 @@ static void macro_try_start_press_mode(int started_idx, key_modification_sequenc
 }
 
 static SemaphoreHandle_t s_seq_mux;
+
+#if USB_OUTPUT_PERF_LOG_ENABLE
+static int64_t s_last_step_log_us;
+#endif
 
 static void macro_seq_mux_init(void)
 {
@@ -452,6 +474,17 @@ void macro_sequence_callback(void* arg) {
     const uint8_t step_idx = key_seq->pos;
     const key_modification_event_t *step_ev = &key_seq->list[step_idx];
     hid_transmit_t macro_event = step_ev->event;
+
+#if USB_OUTPUT_PERF_LOG_ENABLE
+    if (macro_event.header == HEADER_HID_MOUSE) {
+        int64_t now = esp_timer_get_time();
+        if (s_last_step_log_us != 0) {
+            ESP_LOGI(LOG_TITLE, "macro step %u dt=%lld us (want %u)", (unsigned)step_idx,
+                     (long long)(now - s_last_step_log_us), (unsigned)step_ev->duration);
+        }
+        s_last_step_log_us = now;
+    }
+#endif
 
     hid_transmit_t copy_report;
     if (macro_event.header == HEADER_HID_KEYBOARD) {
