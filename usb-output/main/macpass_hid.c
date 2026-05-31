@@ -40,6 +40,7 @@ static bool s_pending_button_only;
 static void hid_queue_report(hid_transmit_t report);
 static bool hid_mouse_merge_spread_drip(hid_mouse_report_t *m);
 static uint32_t hid_mouse_drip_interval_us(void);
+static void hid_spread_flush_remainder_immediate(void);
 
 
 static bool hid_spread_pending(void)
@@ -231,6 +232,14 @@ static void hid_drip_timer_cb(void *arg)
     }
 
     (void)hid_macro_emit_drip_report();
+    if (!hid_spread_pending()) {
+        hid_drip_timer_stop_if_idle();
+        return;
+    }
+    int64_t now = esp_timer_get_time();
+    if (now >= s_spread_end_us) {
+        hid_spread_flush_remainder_immediate();
+    }
     hid_drip_timer_stop_if_idle();
 }
 
@@ -273,6 +282,23 @@ static void hid_macro_send_immediate_step16(int16_t x, int16_t y, int16_t wheel,
     }
 }
 
+/** Python-style final MoveMouse: send target − sent and mark segment complete. */
+static void hid_spread_flush_remainder_immediate(void)
+{
+    int16_t rx = (int16_t)((int32_t)s_target_mx - (int32_t)s_sent_mx);
+    int16_t ry = (int16_t)((int32_t)s_target_my - (int32_t)s_sent_my);
+    int16_t rw = (int16_t)((int32_t)s_target_mw - (int32_t)s_sent_mw);
+    int16_t rp = (int16_t)((int32_t)s_target_mp - (int32_t)s_sent_mp);
+    if (rx == 0 && ry == 0 && rw == 0 && rp == 0) {
+        return;
+    }
+    s_sent_mx = s_target_mx;
+    s_sent_my = s_target_my;
+    s_sent_mw = s_target_mw;
+    s_sent_mp = s_target_mp;
+    hid_macro_send_immediate_step16(rx, ry, rw, rp);
+}
+
 
 void hid_macro_flush_mouse_spread(void)
 {
@@ -282,32 +308,20 @@ void hid_macro_flush_mouse_spread(void)
 
 
     if (!hid_mouse_spread_enabled()) {
-        int16_t rx = (int16_t)((int32_t)s_target_mx - (int32_t)s_sent_mx);
-        int16_t ry = (int16_t)((int32_t)s_target_my - (int32_t)s_sent_my);
-        int16_t rw = (int16_t)((int32_t)s_target_mw - (int32_t)s_sent_mw);
-        int16_t rp = (int16_t)((int32_t)s_target_mp - (int32_t)s_sent_mp);
-        hid_macro_send_immediate_step16(rx, ry, rw, rp);
+        hid_spread_flush_remainder_immediate();
         hid_spread_reset_segment();
         s_last_drip_us = 0;
         hid_drip_timer_stop_if_idle();
         return;
     }
 
-
-    /* Force completion: set elapsed to end and emit until sent == target. */
+    /* Force completion: set elapsed to end, drip lerp, then flush integer residue. */
     s_spread_end_us = esp_timer_get_time();
     s_last_drip_us = 0;
     for (unsigned n = 0; n < 64u && hid_spread_pending(); n++) {
         (void)hid_macro_emit_drip_report();
     }
-    /* Any int8 rounding residue: immediate send. */
-    if (hid_spread_pending()) {
-        int16_t rx = (int16_t)((int32_t)s_target_mx - (int32_t)s_sent_mx);
-        int16_t ry = (int16_t)((int32_t)s_target_my - (int32_t)s_sent_my);
-        int16_t rw = (int16_t)((int32_t)s_target_mw - (int32_t)s_sent_mw);
-        int16_t rp = (int16_t)((int32_t)s_target_mp - (int32_t)s_sent_mp);
-        hid_macro_send_immediate_step16(rx, ry, rw, rp);
-    }
+    hid_spread_flush_remainder_immediate();
     hid_spread_reset_segment();
     s_last_drip_us = 0;
     hid_drip_timer_stop_if_idle();
