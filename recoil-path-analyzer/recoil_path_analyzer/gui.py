@@ -13,12 +13,18 @@ from typing import List, Optional
 import matplotlib
 
 matplotlib.use("TkAgg")
-import matplotlib.cm as mpl_cm
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
-import numpy as np
 
 from .capture import Attempt, chord_ads_down, record_attempt
+from .plot_paths import (
+    DISPLAY_DPI,
+    EXPORT_DPI,
+    FIG_SIZE_INCHES,
+    auto_axis_limits,
+    draw_capped_paths,
+    save_path_plot,
+)
 from .metrics import (
     N_SAMPLES,
     attempts_to_arrays,
@@ -34,6 +40,19 @@ from .session_io import (
     save_session_csv,
     save_session_json,
 )
+
+
+class _HighResToolbar(NavigationToolbar2Tk):
+    """Matplotlib toolbar that saves figures at export DPI."""
+
+    def save_figure(self, *args) -> None:
+        fig = self.canvas.figure
+        orig_dpi = fig.dpi
+        fig.set_dpi(EXPORT_DPI)
+        try:
+            super().save_figure(*args)
+        finally:
+            fig.set_dpi(orig_dpi)
 
 
 class RecoilPathApp(tk.Tk):
@@ -108,17 +127,16 @@ class RecoilPathApp(tk.Tk):
         plot_frame = ttk.Frame(paned)
         paned.add(plot_frame, weight=3)
 
-        self.fig = Figure(figsize=(6, 5), dpi=100)
+        self.fig = Figure(figsize=FIG_SIZE_INCHES, dpi=DISPLAY_DPI)
         self.ax = self.fig.add_subplot(111)
-        self.ax.set_title("Capped paths (shortest time cutoff)")
-        self.ax.set_xlabel("ΔX (px)")
-        self.ax.set_ylabel("ΔY (px)")
-        self.ax.grid(True, alpha=0.3)
-        self.ax.invert_yaxis()
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        self._nav_toolbar = NavigationToolbar2Tk(self.canvas, plot_frame)
+
+        toolbar_frame = ttk.Frame(plot_frame)
+        toolbar_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._nav_toolbar = _HighResToolbar(self.canvas, toolbar_frame)
         self._nav_toolbar.update()
+        self._plot_axis_limits: Optional[tuple] = None
 
         right = ttk.Frame(paned)
         paned.add(right, weight=1)
@@ -212,101 +230,87 @@ class RecoilPathApp(tk.Tk):
         block = self._metrics.get(self._metrics_mode) or self._metrics
         return block.get("referencePath") or []
 
-    def _auto_axis_limits(self, capped: list, live_path: Optional[list] = None) -> None:
-        xs, ys = [], []
-        for path in capped:
-            for x, y in path:
-                xs.append(x)
-                ys.append(y)
-        if live_path:
-            for x, y in live_path:
-                xs.append(x)
-                ys.append(y)
-        if not xs:
-            return
-        mx = max((max(xs) - min(xs)) * 0.05, 8.0)
-        my = max((max(ys) - min(ys)) * 0.05, 8.0)
-        self.ax.set_xlim(min(xs) - mx, max(xs) + mx)
-        self.ax.set_ylim(max(ys) + my, min(ys) - my)
+    def _live_path_for_plot(self) -> Optional[list]:
+        if self._live_attempt and len(self._live_attempt.points) >= 1:
+            return self._live_attempt.relative_points()
+        return None
 
     def _plot_attempts(self, *, auto_fit: bool = True) -> None:
-        self.ax.clear()
-        mode_label = "mean path ref" if self._metrics_mode == "meanPathRef" else "shortest time ref"
-        self.ax.set_xlabel("ΔX (px)")
-        self.ax.set_ylabel("ΔY (px)")
-        self.ax.grid(True, alpha=0.3)
-        self.ax.invert_yaxis()
+        live_path = self._live_path_for_plot()
 
-        if not self._attempts and not self._live_attempt:
+        if not self._attempts and not live_path:
             self._default_xlim = None
             self._default_ylim = None
+            self._plot_axis_limits = None
+            draw_capped_paths(
+                self.ax,
+                [],
+                ref_idx=-1,
+                ref_path=[],
+                cap_ms=0.0,
+                metrics_mode=self._metrics_mode,
+            )
+            self.fig.tight_layout()
             self.canvas.draw_idle()
             return
 
         capped, ref_idx, ref_path, cap_ms = self._capped_paths_for_plot()
-        n_series = len(capped) + (1 if self._live_attempt else 0)
-        colors = mpl_cm.tab10(np.linspace(0, 1, max(n_series, 1)))
-
-        if cap_ms > 0:
-            cap_note = f" @ {cap_ms:.0f} ms"
-        else:
-            cap_note = ""
-        self.ax.set_title(f"Capped paths{cap_note} — {mode_label}")
-
-        for i, path in enumerate(capped):
-            if len(path) < 2:
-                continue
-            xs = [p[0] for p in path]
-            ys = [p[1] for p in path]
-            is_ref_attempt = (
-                self._metrics_mode == "shortestTimeRef" and i == ref_idx
-            )
-            lw = 1.0 if is_ref_attempt else 0.6
-            alpha = 1.0 if is_ref_attempt else 0.55
-            if is_ref_attempt:
-                label = f"#{i + 1} (ref)"
-            else:
-                label = f"#{i + 1}"
-            self.ax.plot(xs, ys, color=colors[i], alpha=alpha, linewidth=lw, label=label)
-
-        if ref_path and len(ref_path) >= 2 and self._metrics_mode == "meanPathRef":
-            self.ax.plot(
-                [p[0] for p in ref_path],
-                [p[1] for p in ref_path],
-                color="black",
-                linewidth=1.0,
-                alpha=0.9,
-                label="mean path",
-                zorder=4,
-            )
-
-        live_path = None
-        if self._live_attempt and len(self._live_attempt.points) >= 1:
-            live_path = self._live_attempt.relative_points()
-            if len(live_path) >= 2:
-                self.ax.plot(
-                    [p[0] for p in live_path],
-                    [p[1] for p in live_path],
-                    color=colors[len(capped) % len(colors)],
-                    linewidth=0.9,
-                    linestyle="--",
-                    alpha=0.95,
-                    label="live",
-                )
-            elif len(live_path) == 1:
-                self.ax.scatter([live_path[0][0]], [live_path[0][1]], s=30, c="lime", zorder=6)
-
-        ends = np.array([p[-1] for p in capped if p])
-        if len(ends):
-            self.ax.scatter(ends[:, 0], ends[:, 1], c="red", s=40, zorder=5, label="capped endpoints")
-
-        self.ax.legend(loc="best", fontsize=8)
-        self.fig.tight_layout()
         if auto_fit:
-            self._auto_axis_limits(capped, live_path)
-            self._default_xlim = self.ax.get_xlim()
-            self._default_ylim = self.ax.get_ylim()
+            xlim, ylim = auto_axis_limits(capped, live_path)
+            self._default_xlim = xlim
+            self._default_ylim = ylim
+        elif self._default_xlim and self._default_ylim:
+            xlim, ylim = self._default_xlim, self._default_ylim
+        else:
+            xlim, ylim = auto_axis_limits(capped, live_path)
+
+        self._plot_axis_limits = (xlim, ylim)
+        draw_capped_paths(
+            self.ax,
+            capped,
+            ref_idx=ref_idx,
+            ref_path=ref_path,
+            cap_ms=cap_ms,
+            metrics_mode=self._metrics_mode,
+            live_path=live_path,
+            xlim=xlim,
+            ylim=ylim,
+        )
+        self.fig.tight_layout()
         self.canvas.draw_idle()
+
+    def _export_plot_pngs(self, base: Path) -> list[Path]:
+        if not self._attempts:
+            return []
+
+        timed = [a.relative_points_timed() for a in self._attempts]
+        capped, ref_idx, cap_ms = cap_paths_to_shortest_time(timed)[:3]
+        stacked = attempts_to_arrays(capped, N_SAMPLES)
+        mean_ref = [(float(x), float(y)) for x, y in mean_path_from_stack(stacked)]
+        shortest_ref = (
+            [(float(x), float(y)) for x, y in stacked[ref_idx]] if ref_idx >= 0 else []
+        )
+
+        xlim, ylim = self._plot_axis_limits or auto_axis_limits(capped)
+        saved: list[Path] = []
+        exports = (
+            ("shortestTimeRef", shortest_ref, "shortest_time"),
+            ("meanPathRef", mean_ref, "mean_path"),
+        )
+        for mode, ref_path, suffix in exports:
+            out = base.with_name(base.name + f"_plot_{suffix}.png")
+            save_path_plot(
+                out,
+                capped,
+                ref_idx=ref_idx,
+                ref_path=ref_path,
+                cap_ms=cap_ms,
+                metrics_mode=mode,
+                xlim=xlim,
+                ylim=ylim,
+            )
+            saved.append(out)
+        return saved
 
     def _start_session(self) -> None:
         if self._worker and self._worker.is_alive():
@@ -440,9 +444,11 @@ class RecoilPathApp(tk.Tk):
             save_session_json(json_path, doc)
             save_session_csv(csv_path, self._attempts)
             save_metrics_csv(metrics_path, self._metrics)
-            self.var_export.set(
-                f"{json_path.name}\n{csv_path.name}\n{metrics_path.name}\n→ {self._output_dir}"
-            )
+            plot_paths = self._export_plot_pngs(base)
+            export_lines = [json_path.name, csv_path.name, metrics_path.name]
+            export_lines.extend(p.name for p in plot_paths)
+            export_lines.append(f"→ {self._output_dir}")
+            self.var_export.set("\n".join(export_lines))
             self.var_status.set(
                 f"Done — {len(self._attempts)} attempt(s). Files saved to sessions/."
             )
