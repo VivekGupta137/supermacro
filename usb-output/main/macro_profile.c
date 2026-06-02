@@ -169,6 +169,7 @@ void macro_profile_apply_mouse_step_jitter(int16_t *x, int16_t *y)
 static char s_profile_name[MACRO_PROFILE_NAME_CAP] = "built-in";
 static char s_profile_game[MACRO_PROFILE_NAME_CAP] = "";
 static bool s_macros_enabled = true;
+static bool s_debug_mode = false;
 static bool s_additive_mouse = false;
 static float s_edpi = 0.f;
 static float s_pattern_edpi = 800.f;
@@ -375,6 +376,8 @@ const char *macro_profile_get_game(void) { return s_profile_game; }
 
 bool macro_profile_macros_enabled(void) { return s_macros_enabled; }
 
+bool macro_profile_debug_mode(void) { return s_debug_mode; }
+
 bool macro_profile_additive_mouse_enabled(void)
 {
     return s_additive_mouse;
@@ -497,6 +500,7 @@ void macro_profile_build_status_json(char *buf, size_t buflen)
     cJSON_AddStringToObject(root, "game", macro_profile_get_game());
     cJSON_AddBoolToObject(root, "customPropsActive", s_customprops_active);
     cJSON_AddBoolToObject(root, "macrosOn", s_macros_enabled);
+    cJSON_AddBoolToObject(root, "debugMode", s_debug_mode);
     cJSON_AddNumberToObject(root, "activeScript", ai);
     cJSON_AddNumberToObject(root, "activeWeapon", ai);
     cJSON_AddNumberToObject(root, "scriptCount", sn);
@@ -715,6 +719,7 @@ static void profile_runtime_reset_parsed(void)
     s_active_script = 0;
 #endif
     s_additive_mouse = false;
+    s_debug_mode = false;
     s_edpi = 0.f;
     s_pattern_edpi = 800.f;
     s_edpi_scale = 1.f;
@@ -1316,6 +1321,10 @@ bool macro_profile_parse_json(const char *json, group_sequence_t *out)
     const cJSON *additive = cJSON_GetObjectItem(root, "additiveMouse");
     s_additive_mouse = !cJSON_IsFalse(additive);
 
+    /* Optional root flag; omitted or false = allow manual aim during spread. */
+    const cJSON *dbg = cJSON_GetObjectItem(root, "debugMode");
+    s_debug_mode = cJSON_IsTrue(dbg);
+
     const cJSON *name = cJSON_GetObjectItem(root, "name");
     if (name && cJSON_IsString(name) && name->valuestring) {
         strncpy(s_profile_name, name->valuestring, sizeof(s_profile_name) - 1);
@@ -1531,6 +1540,7 @@ void macro_profile_init(const group_sequence_t *fallback)
     s_has_toggle_macros_trig = false;
     s_has_next_script_trig = false;
     s_macros_enabled = true;
+    s_debug_mode = false;
     s_additive_mouse = false;
     s_schema_version = 1;
 #endif

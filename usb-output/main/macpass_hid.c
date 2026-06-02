@@ -18,7 +18,7 @@ QueueHandle_t global_hid_keyboard_queue = NULL;
 static TaskHandle_t s_hid_task;
 
 
-/** Current bullet segment (lerp 0 → target over [start, end]). */
+/** Current bullet segment (time-linear spread between step boundaries). */
 static int16_t s_target_mx;
 static int16_t s_target_my;
 static int16_t s_target_mw;
@@ -30,6 +30,7 @@ static int16_t s_sent_mp;
 static int64_t s_spread_start_us;
 static int64_t s_spread_end_us;
 static int64_t s_last_drip_us;
+static uint32_t s_spread_drip_goal;
 static esp_timer_handle_t s_drip_timer;
 
 /** Latest SPI button-only report (zero movement); coalesced, not queued in FIFO. */
@@ -68,67 +69,86 @@ static void hid_spread_reset_segment(void)
     s_sent_mx = s_sent_my = s_sent_mw = s_sent_mp = 0;
     s_spread_start_us = 0;
     s_spread_end_us = 0;
+    s_spread_drip_goal = 0;
 }
 
-/** Time-linear lerp: ideal = target * elapsed / duration; send ideal - sent per drip. */
-static int8_t hid_take_drip_axis_lerp(int16_t target, int16_t *sent)
+static void hid_spread_drip_timer_stop(void)
+{
+    if (s_drip_timer != NULL && esp_timer_is_active(s_drip_timer)) {
+        esp_timer_stop(s_drip_timer);
+    }
+}
+
+/** Elapsed progress 0..goal across the bullet spread window (smooth in wall time). */
+static uint32_t hid_spread_elapsed_tick(uint32_t goal)
+{
+    if (goal == 0) {
+        return 0;
+    }
+    int64_t dur = s_spread_end_us - s_spread_start_us;
+    if (dur <= 0) {
+        return goal;
+    }
+    int64_t elapsed = esp_timer_get_time() - s_spread_start_us;
+    if (elapsed <= 0) {
+        return 0;
+    }
+    if (elapsed >= dur) {
+        return goal;
+    }
+    return (uint32_t)((elapsed * (int64_t)goal) / dur);
+}
+
+/**
+ * ideal = target * axis_tick / eff_goal − sent.
+ * Small |target| uses a shorter eff_goal so X ramps in time; large Y uses full window.
+ */
+static int8_t hid_take_drip_axis_spread(int16_t target, int16_t *sent, uint32_t tick, uint32_t goal)
 {
     int32_t remain = (int32_t)target - (int32_t)*sent;
     if (remain == 0) {
         return 0;
     }
 
-    int64_t now = esp_timer_get_time();
-    int64_t dur = s_spread_end_us - s_spread_start_us;
-    if (dur <= 0) {
-        int32_t out32 = (int32_t)clamp_i32_to_i8_mouse(remain);
-        *sent += (int16_t)out32;
-        return (int8_t)out32;
+    if (goal == 0) {
+        goal = 1;
+    }
+    if (tick > goal) {
+        tick = goal;
     }
 
-    int64_t elapsed = now - s_spread_start_us;
-    if (elapsed < 0) {
-        elapsed = 0;
-    }
-    if (elapsed > dur) {
-        elapsed = dur;
+    uint32_t eff_goal = goal;
+    int32_t abs_t = target >= 0 ? (int32_t)target : -(int32_t)target;
+    if (abs_t > 0 && (uint32_t)abs_t < eff_goal) {
+        eff_goal = (uint32_t)abs_t;
     }
 
-    int32_t ideal = (int32_t)(((int64_t)target * elapsed) / dur);
+    uint32_t axis_tick = tick;
+    if (eff_goal < goal) {
+        axis_tick = (uint32_t)(((uint64_t)tick * eff_goal) / goal);
+        if (axis_tick == 0 && tick > 0 && target != 0) {
+            axis_tick = 1;
+        }
+    }
+    if (axis_tick > eff_goal) {
+        axis_tick = eff_goal;
+    }
+
+    int32_t ideal = (int32_t)(((int64_t)target * (int64_t)axis_tick) / (int64_t)eff_goal);
     int32_t move = ideal - (int32_t)*sent;
 
-    if (elapsed >= dur) {
-        move = remain;
-    }
-
-    /* sent ahead of ideal curve (opposite sign from remaining distance) */
     if ((remain > 0 && move < 0) || (remain < 0 && move > 0)) {
-        return 0;
+        move = 0;
     }
-
-    if (move == 0) {
-        /* Integer lerp stalls on small deltas — drip a time-proportional slice. */
-        const uint32_t drip_us = hid_mouse_drip_interval_us();
-        if (drip_us == 0) {
-            return 0;
-        }
-        int32_t abs_remain = remain > 0 ? remain : -remain;
-        int32_t slice = (int32_t)(((int64_t)abs_remain * (int64_t)drip_us) / dur);
-        if (slice == 0) {
-            slice = 1;
-        }
-        move = (remain > 0) ? slice : -slice;
-    }
-
-    /* Same-sign clamp only (do not mix signs). */
-    if (remain > 0) {
-        if (move > remain) {
-            move = remain;
-        }
-    } else if (move < remain) {
+    if (remain > 0 && move > remain) {
+        move = remain;
+    } else if (remain < 0 && move < remain) {
         move = remain;
     }
-
+    /* Avoid stall-then-jump when integer ideal matches sent but spread is still active. */
+    if (move == 0 && remain != 0 && tick > 0) {
+        move = (remain > 0) ? 1 : -1;
+    }
     if (move == 0) {
         return 0;
     }
@@ -153,11 +173,14 @@ static bool hid_mouse_merge_spread_drip(hid_mouse_report_t *m)
     }
     s_last_drip_us = now;
 
+    const uint32_t goal = s_spread_drip_goal;
+    const uint32_t tick = hid_spread_elapsed_tick(goal);
+
     hid_mouse_report_t drip = {0};
-    drip.x = hid_take_drip_axis_lerp(s_target_mx, &s_sent_mx);
-    drip.y = hid_take_drip_axis_lerp(s_target_my, &s_sent_my);
-    drip.wheel = hid_take_drip_axis_lerp(s_target_mw, &s_sent_mw);
-    drip.pan = hid_take_drip_axis_lerp(s_target_mp, &s_sent_mp);
+    drip.x = hid_take_drip_axis_spread(s_target_mx, &s_sent_mx, tick, goal);
+    drip.y = hid_take_drip_axis_spread(s_target_my, &s_sent_my, tick, goal);
+    drip.wheel = hid_take_drip_axis_spread(s_target_mw, &s_sent_mw, tick, goal);
+    drip.pan = hid_take_drip_axis_spread(s_target_mp, &s_sent_mp, tick, goal);
     add_mouse_movement_delta(m, drip);
     return drip.x != 0 || drip.y != 0 || drip.wheel != 0 || drip.pan != 0;
 }
@@ -168,9 +191,7 @@ static void hid_drip_timer_stop_if_idle(void)
     if (hid_spread_pending() || s_drip_timer == NULL) {
         return;
     }
-    if (esp_timer_is_active(s_drip_timer)) {
-        esp_timer_stop(s_drip_timer);
-    }
+    hid_spread_drip_timer_stop();
 }
 
 
@@ -232,14 +253,6 @@ static void hid_drip_timer_cb(void *arg)
     }
 
     (void)hid_macro_emit_drip_report();
-    if (!hid_spread_pending()) {
-        hid_drip_timer_stop_if_idle();
-        return;
-    }
-    int64_t now = esp_timer_get_time();
-    if (now >= s_spread_end_us) {
-        hid_spread_flush_remainder_immediate();
-    }
     hid_drip_timer_stop_if_idle();
 }
 
@@ -306,25 +319,26 @@ void hid_macro_flush_mouse_spread(void)
         return;
     }
 
+    hid_spread_drip_timer_stop();
 
     if (!hid_mouse_spread_enabled()) {
         hid_spread_flush_remainder_immediate();
         hid_spread_reset_segment();
         s_last_drip_us = 0;
-        hid_drip_timer_stop_if_idle();
         return;
     }
 
-    /* Force completion: set elapsed to end, drip lerp, then flush integer residue. */
+    /* Finish segment: snap window to end, drip loop, then any int8 residue (IMP-2). */
     s_spread_end_us = esp_timer_get_time();
     s_last_drip_us = 0;
     for (unsigned n = 0; n < 64u && hid_spread_pending(); n++) {
         (void)hid_macro_emit_drip_report();
     }
-    hid_spread_flush_remainder_immediate();
+    if (hid_spread_pending()) {
+        hid_spread_flush_remainder_immediate();
+    }
     hid_spread_reset_segment();
     s_last_drip_us = 0;
-    hid_drip_timer_stop_if_idle();
 }
 
 
@@ -346,8 +360,10 @@ void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan,
         hid_macro_flush_mouse_spread();
     }
 
+    hid_spread_drip_timer_stop();
 
     int64_t now = esp_timer_get_time();
+    const uint32_t drip_us = hid_mouse_drip_interval_us();
 
     s_target_mx = x;
     s_target_my = y;
@@ -359,6 +375,10 @@ void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan,
         spread_us = 1000u;
     }
     s_spread_end_us = now + (int64_t)spread_us;
+    s_spread_drip_goal = drip_us > 0 ? (spread_us + drip_us - 1u) / drip_us : 1u;
+    if (s_spread_drip_goal == 0) {
+        s_spread_drip_goal = 1;
+    }
     s_last_drip_us = 0;
 
     hid_drip_timer_ensure_running();
@@ -369,9 +389,9 @@ void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan,
 
 void hid_macro_cancel_mouse_spread(void)
 {
+    hid_spread_drip_timer_stop();
     hid_spread_reset_segment();
     s_last_drip_us = 0;
-    hid_drip_timer_stop_if_idle();
 }
 
 
@@ -526,6 +546,14 @@ void hid_wake_pump(void)
 void hid_add_report(hid_transmit_t report)
 {
     if (report.header == HEADER_HID_MOUSE) {
+        if (macro_profile_debug_mode() && hid_spread_pending() &&
+            (report.event.mouse.x != 0 || report.event.mouse.y != 0 || report.event.mouse.wheel != 0 ||
+             report.event.mouse.pan != 0)) {
+            report.event.mouse.x = 0;
+            report.event.mouse.y = 0;
+            report.event.mouse.wheel = 0;
+            report.event.mouse.pan = 0;
+        }
         (void)hid_mouse_merge_spread_drip(&report.event.mouse);
     }
     hid_queue_report(report);

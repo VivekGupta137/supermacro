@@ -10,6 +10,11 @@ const char *macro_profile_get_name(void);
 const char *macro_profile_get_game(void);
 
 bool macro_profile_macros_enabled(void);
+/**
+ * When true (profile root `debugMode`), passthrough mouse deltas are ignored during macro
+ * spread so only the script moves the cursor (consistency / hands-off testing).
+ */
+bool macro_profile_debug_mode(void);
 /** When true (default), macro mouse deltas add to the user's current mouse deltas on each tick. */
 bool macro_profile_additive_mouse_enabled(void);
 /** User eDPI from profile (0 = unset). */

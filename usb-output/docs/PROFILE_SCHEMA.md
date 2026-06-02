@@ -194,6 +194,23 @@ Without a `humanize` block, firmware still spreads at **8 ms** (`HID_MOUSE_DRIP_
 
 **Empty `steps`:** If omitted or `[]`, firmware inserts one neutral keyboard step (group still occupies a slot).
 
+### Profile `debugMode` (optional, root field)
+
+Boolean at the **root** of the profile (all schema versions). **Optional; default `false`** — omit the field or set `false` for normal gameplay.
+
+| Value | Behaviour |
+|-------|-----------|
+| omitted / `false` | **Default.** Your physical mouse movement is merged with macro recoil during each bullet’s spread window (aim + script). |
+| `true` | **Debug / consistency test.** While a step’s movement is being spread over USB, SPI passthrough **x/y/wheel/pan** are zeroed; only the script moves the cursor. Mouse **buttons** still passthrough. |
+
+Use `debugMode: true` for hands-off spray tests (e.g. compare pattern repeatability without sensor noise or manual correction). Use `false` when playing normally.
+
+Requires profile load (SPIFFS boot or `POST /api/profile`); changing JSON on disk alone does not apply until upload/reboot.
+
+```json
+"debugMode": true
+```
+
 ### Group / mode fields (all versions)
 
 | Field | Type | Required | Default | Description |
@@ -246,7 +263,7 @@ On each macro tick for mouse steps:
 
 - **Buttons** come from your real mouse (passthrough on every SPI report).
 - **Movement** (`x`, `y`, `wheel`, `pan`) from the script step is **spread across USB reports** until the next step (default **8 ms** ≈ 125 Hz; tune with `humanize.dripMs` or `humanize.dripHz`). Bullet timing (`us` between steps) is unchanged; only HID delivery is smoothed.
-- **User aim** on SPI reports is unchanged; when a drip slice is due, it is **added** to the same report as your physical `x`/`y` (clamped to int8 per axis).
+- **User aim** on SPI reports is merged with macro drip by default; when a drip slice is due, it is **added** to the same report as your physical `x`/`y` (clamped to int8 per axis). Root **`debugMode: true`** disables passthrough movement during spread (see above).
 
 Pending spread is **discarded** when no mouse macro sequence is running (e.g. LMB release), so recoil does not continue after you stop firing.
 
@@ -634,6 +651,7 @@ Single flat list of macro groups. All groups are **active** at once (up to 10).
 | `eDPI` | number | no | Your eDPI (see [scaling](#sensitivity-scaling-edpi)). |
 | `patternEDPI` | number | no | Author reference eDPI (default `800`). |
 | `additiveMouse` | bool | no | Legacy; no effect on tick blending. |
+| `debugMode` | bool | no | `false` | When `true`, ignore physical mouse movement during bullet spread (consistency testing). |
 
 ### Minimal v1 example — RMB pull
 
@@ -711,7 +729,7 @@ Supports multiple script banks (weapons), **one active bank** at a time, and opt
 | `macrosOn` | bool | no | `true` | Initial global enable for timed macro output. |
 | `nextScript` | object / `false` | no | disabled | Rising-edge hotkey: cycle `activeScript` and reload that bank. |
 | `toggleMacros` | object / `false` | no | disabled | Rising-edge hotkey: flip `macrosOn`. |
-| `eDPI`, `patternEDPI`, `additiveMouse` | | no | | Same as v1. |
+| `eDPI`, `patternEDPI`, `additiveMouse`, `debugMode` | | no | | Same as v1. |
 
 ### Script object (`scripts[]`)
 
@@ -947,6 +965,7 @@ All [shared group fields](#group--mode-fields-all-versions), plus:
 | `customPropsActive` | `true` only when game-specific `customprops` are parsed and applied. |
 | `fw` | ESP-IDF version string. |
 | `macrosOn` | Global macro output enabled. |
+| `debugMode` | When `true`, passthrough mouse movement is ignored during bullet spread. |
 | `eDPI` | Parsed user eDPI (`0` if unset). |
 | `patternEDPI` | Parsed reference eDPI. |
 | `edpiScale` | `eDPI / patternEDPI` (or `1`). |
