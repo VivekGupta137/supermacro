@@ -27,14 +27,14 @@ from .plot_paths import (
 )
 from .metrics import (
     N_SAMPLES,
-    attempts_to_arrays,
-    bullet_step_marker_points,
+    bullet_markers_for_attempts,
     cap_paths_to_shortest_time,
     compute_session_metrics,
     format_metrics_text,
     last_sample_time_us,
     mean_path_from_stack,
-    parse_bullet_interval_us,
+    parse_bullet_step,
+    timed_paths_to_arrays,
 )
 from .docs_viewer import show_docs_modal
 from .session_io import (
@@ -119,26 +119,25 @@ class RecoilPathApp(tk.Tk):
             command=self._on_plot_display_changed,
         ).grid(row=3, column=0, sticky=tk.W, pady=(6, 0))
 
-        ttk.Label(top, text="Step interval:").grid(row=3, column=1, sticky=tk.E, padx=(8, 4), pady=(6, 0))
-        self.var_bullet_interval = tk.StringVar(value="133300")
-        self.ent_bullet_interval = ttk.Entry(top, textvariable=self.var_bullet_interval, width=10)
-        self.ent_bullet_interval.grid(row=3, column=2, sticky=tk.W, pady=(6, 0))
-        self.var_bullet_unit = tk.StringVar(value="us")
-        self.cmb_bullet_unit = ttk.Combobox(
+        ttk.Label(top, text="Bullet step:").grid(row=3, column=1, sticky=tk.E, padx=(8, 4), pady=(6, 0))
+        self.var_bullet_step = tk.StringVar(value="133.3 ms")
+        self.ent_bullet_step = ttk.Entry(top, textvariable=self.var_bullet_step, width=14)
+        self.ent_bullet_step.grid(row=3, column=2, columnspan=2, sticky=tk.W, pady=(6, 0))
+        self.var_bullet_step.trace_add("write", self._on_bullet_settings_trace)
+
+        self.var_align_bullet_phase = tk.BooleanVar(value=True)
+        self.var_align_bullet_phase.trace_add("write", self._on_bullet_settings_trace)
+        ttk.Checkbutton(
             top,
-            textvariable=self.var_bullet_unit,
-            values=("us", "ms"),
-            width=4,
-            state="readonly",
-        )
-        self.cmb_bullet_unit.grid(row=3, column=3, sticky=tk.W, pady=(6, 0))
-        self.var_bullet_interval.trace_add("write", self._on_bullet_settings_trace)
-        self.var_bullet_unit.trace_add("write", self._on_bullet_settings_trace)
+            text="Align steps to first motion",
+            variable=self.var_align_bullet_phase,
+            command=self._on_plot_display_changed,
+        ).grid(row=4, column=1, columnspan=2, sticky=tk.W, pady=(6, 0))
 
         self.var_bullet_step_lines = tk.BooleanVar(value=True)
         self.chk_bullet_step_lines = ttk.Checkbutton(
             top,
-            text="Step vertical lines",
+            text="Bullet guides (crosshair)",
             variable=self.var_bullet_step_lines,
             command=self._on_plot_display_changed,
         )
@@ -285,32 +284,44 @@ class RecoilPathApp(tk.Tk):
         self._on_plot_display_changed()
 
     def _on_bullet_settings_trace(self, *_args) -> None:
-        if str(self.var_bullet_unit.get()) not in ("us", "ms"):
-            return
         self._on_plot_display_changed()
+        if self._attempts and self._metrics:
+            self._recompute_metrics()
 
     def _on_plot_display_changed(self) -> None:
         if self._attempts or self._live_attempt:
             self._plot_attempts(auto_fit=False)
 
+    def _bullet_step_text(self) -> str:
+        return self.var_bullet_step.get().strip()
+
     def _bullet_interval_us(self) -> int | None:
+        text = self._bullet_step_text()
+        if not text:
+            return None
         try:
-            return parse_bullet_interval_us(
-                self.var_bullet_interval.get(),
-                self.var_bullet_unit.get(),
-            )
+            return parse_bullet_step(text)
         except ValueError:
             return None
 
     def _bullet_interval_label(self) -> str | None:
-        interval_us = self._bullet_interval_us()
-        if interval_us is None:
+        text = self._bullet_step_text()
+        if not text or self._bullet_interval_us() is None:
             return None
-        if self.var_bullet_unit.get() == "ms":
-            return f"{interval_us / 1000:.3g} ms"
-        if interval_us >= 1000 and interval_us % 1000 == 0:
-            return f"{interval_us // 1000} ms"
-        return f"{interval_us} µs"
+        return text
+
+    def _session_metrics_kwargs(self) -> dict:
+        return {
+            "bullet_step_us": self._bullet_interval_us(),
+            "bullet_step_input": self._bullet_step_text() or None,
+            "align_bullet_to_first_motion": bool(self.var_align_bullet_phase.get()),
+        }
+
+    def _recompute_metrics(self) -> None:
+        if not self._attempts:
+            return
+        self._metrics = compute_session_metrics(self._attempts, **self._session_metrics_kwargs())
+        self._refresh_all_metrics_text()
 
     def _bullet_markers_for_plot(self, cap_t_us: int) -> tuple[list, str | None]:
         if not self.var_bullet_markers.get():
@@ -320,9 +331,12 @@ class RecoilPathApp(tk.Tk):
         if interval_us is None or label is None:
             return [], None
         timed = [a.relative_points_timed() for a in self._attempts]
-        markers = [
-            bullet_step_marker_points(tp, interval_us, max_t_us=cap_t_us) for tp in timed
-        ]
+        markers = bullet_markers_for_attempts(
+            timed,
+            interval_us,
+            cap_t_us,
+            align_to_first_motion=bool(self.var_align_bullet_phase.get()),
+        )
         return markers, label
 
     def _show_bullet_step_lines(self) -> bool:
@@ -338,7 +352,7 @@ class RecoilPathApp(tk.Tk):
 
         ref_path = self._reference_path_for_mode()
         if not ref_path and capped:
-            stacked = attempts_to_arrays(capped, N_SAMPLES)
+            stacked = timed_paths_to_arrays(timed, cap_t_us, N_SAMPLES)
             if self._metrics_mode == "meanPathRef":
                 ref_path = [(float(x), float(y)) for x, y in mean_path_from_stack(stacked)]
             elif ref >= 0:
@@ -411,7 +425,9 @@ class RecoilPathApp(tk.Tk):
 
         capped, ref_idx, ref_path, cap_ms, cap_t_us = self._capped_paths_for_plot()
         bullet_markers, bullet_label = self._bullet_markers_for_plot(cap_t_us)
-        stacked = attempts_to_arrays(capped, N_SAMPLES)
+        timed = [a.relative_points_timed() for a in self._attempts]
+        cap_t_us = int(cap_ms * 1000) if cap_ms > 0 else 0
+        stacked = timed_paths_to_arrays(timed, cap_t_us, N_SAMPLES)
         mean_ref = [(float(x), float(y)) for x, y in mean_path_from_stack(stacked)]
         shortest_ref = (
             [(float(x), float(y)) for x, y in stacked[ref_idx]] if ref_idx >= 0 else []
@@ -519,7 +535,7 @@ class RecoilPathApp(tk.Tk):
                 att.index = len(recorded)
                 recorded.append(att)
                 self._attempts = list(recorded)
-                self._metrics = compute_session_metrics(recorded)
+                self._metrics = compute_session_metrics(recorded, **self._session_metrics_kwargs())
                 self._ui_plot()
                 self._ui_refresh_metrics()
 
@@ -533,7 +549,11 @@ class RecoilPathApp(tk.Tk):
                         time.sleep(0.05)
 
             self._attempts = recorded
-            self._metrics = compute_session_metrics(recorded) if recorded else {}
+            self._metrics = (
+                compute_session_metrics(recorded, **self._session_metrics_kwargs())
+                if recorded
+                else {}
+            )
             self._ui_finish()
         except Exception as exc:
             self._ui_error(str(exc))
@@ -567,7 +587,9 @@ class RecoilPathApp(tk.Tk):
                 self._refresh_all_metrics_text()
                 return
 
-            self._metrics = compute_session_metrics(self._attempts)
+            self._metrics = compute_session_metrics(
+                self._attempts, **self._session_metrics_kwargs()
+            )
             self._plot_attempts()
             self._refresh_all_metrics_text()
 
@@ -602,6 +624,8 @@ class RecoilPathApp(tk.Tk):
                 poll_hz=float(self.var_poll_hz.get()),
                 metrics=self._metrics,
                 exports=exports_meta,
+                bullet_step_input=self._bullet_step_text() or None,
+                bullet_step_us=self._bullet_interval_us(),
             )
             save_session_json(json_path, doc)
             export_paths = [json_path, csv_path, metrics_path, *plot_paths]

@@ -43,16 +43,18 @@ def auto_axis_limits(
     return (min(xs) - mx, max(xs) + mx), (max(ys) + my, min(ys) - my)
 
 
-def reference_bullet_markers(
+def reference_bullet_guides(
     bullet_markers: Sequence[Sequence[Point]],
     ref_idx: int,
     metrics_mode: str,
 ) -> List[Point]:
-    """Reference bullet-step positions for grid lines (ref attempt or per-step mean)."""
+    """Guide crosshair center per bullet index (ref path or mean of markers)."""
     if not bullet_markers:
         return []
+    n_steps = min(len(m) for m in bullet_markers if m) if bullet_markers else 0
+    if n_steps <= 0:
+        return []
     if metrics_mode == "meanPathRef":
-        n_steps = max(len(m) for m in bullet_markers)
         out: List[Point] = []
         for j in range(n_steps):
             xs = [m[j][0] for m in bullet_markers if j < len(m)]
@@ -60,36 +62,26 @@ def reference_bullet_markers(
             if xs:
                 out.append((sum(xs) / len(xs), sum(ys) / len(ys)))
         return out
-    if 0 <= ref_idx < len(bullet_markers):
-        return list(bullet_markers[ref_idx])
-    return list(bullet_markers[0])
+    if 0 <= ref_idx < len(bullet_markers) and bullet_markers[ref_idx]:
+        return list(bullet_markers[ref_idx][:n_steps])
+    for m in bullet_markers:
+        if m:
+            return list(m[:n_steps])
+    return []
 
 
-def _draw_bullet_step_vertical_lines(
+def _draw_bullet_step_guide_lines(
     ax: Axes,
-    ref_markers: Sequence[Point],
+    guide_points: Sequence[Point],
     *,
     scale: float,
 ) -> None:
-    for x, _y in ref_markers:
-        ax.axvline(
-            x=x,
-            color="0.45",
-            alpha=0.42,
-            linestyle="--",
-            linewidth=0.75 * scale,
-            zorder=1,
-        )
-    if ref_markers:
-        ax.plot(
-            [],
-            [],
-            color="0.45",
-            linestyle="--",
-            alpha=0.42,
-            linewidth=0.75 * scale,
-            label="bullet step lines",
-        )
+    """Horizontal guide through each bullet landmark (even vertical spacing per step)."""
+    style = dict(color="0.45", alpha=0.42, linestyle="--", linewidth=0.75 * scale, zorder=1)
+    for _x, y in guide_points:
+        ax.axhline(y=y, **style)
+    if guide_points:
+        ax.plot([], [], **style, label="bullet step (guide)")
 
 
 def draw_capped_paths(
@@ -131,8 +123,8 @@ def draw_capped_paths(
         and bullet_markers
         and any(bullet_markers)
     ):
-        ref_steps = reference_bullet_markers(bullet_markers, ref_idx, metrics_mode)
-        _draw_bullet_step_vertical_lines(ax, ref_steps, scale=scale)
+        guide_pts = reference_bullet_guides(bullet_markers, ref_idx, metrics_mode)
+        _draw_bullet_step_guide_lines(ax, guide_pts, scale=scale)
 
     for i, path in enumerate(capped):
         if len(path) < 2:
@@ -167,7 +159,7 @@ def draw_capped_paths(
             [],
             s=8 * scale,
             c="black",
-            label=f"bullet steps ({bullet_interval_label})",
+            label=f"bullet step ({bullet_interval_label})",
         )
 
     if ref_path and len(ref_path) >= 2 and metrics_mode == "meanPathRef" and show_trace_lines:

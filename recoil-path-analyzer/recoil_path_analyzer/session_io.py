@@ -39,6 +39,8 @@ def build_session_document(
     poll_hz: float,
     metrics: Optional[Dict[str, Any]] = None,
     exports: Optional[Dict[str, str]] = None,
+    bullet_step_input: Optional[str] = None,
+    bullet_step_us: Optional[int] = None,
 ) -> Dict[str, Any]:
     doc: Dict[str, Any] = {
         "schema": SCHEMA,
@@ -51,6 +53,10 @@ def build_session_document(
         "metrics": _metrics_for_export(metrics),
         "attempts": [attempt_to_dict(a, i) for i, a in enumerate(attempts)],
     }
+    if bullet_step_input:
+        doc["bulletStepInput"] = bullet_step_input
+    if bullet_step_us and bullet_step_us > 0:
+        doc["bulletStepUs"] = bullet_step_us
     if exports:
         doc["exports"] = exports
     return doc
@@ -126,7 +132,15 @@ def _write_mode_summary(w: csv.writer, prefix: str, block: Dict[str, Any]) -> No
         "endpointRangeX",
         "endpointRangeY",
         "deviationRmsPx",
+        "deviationRmsXPx",
+        "deviationRmsYPx",
         "maxDeviationPx",
+        "maxDeviationXPx",
+        "maxDeviationYPx",
+        "pathSpreadMaxXPx",
+        "pathSpreadMeanXPx",
+        "pathSpreadMaxYPx",
+        "pathSpreadMeanYPx",
         "durationMeanMs",
         "durationCv",
     ):
@@ -143,7 +157,31 @@ def save_metrics_csv(path: Path, metrics: Dict[str, Any]) -> None:
         w.writerow(["cap_shortestTimeIndex", cap.get("shortestTimeIndex", "")])
         w.writerow(["cap_timeMs", cap.get("capTimeMs", metrics.get("capTimeMs", ""))])
         w.writerow(["cap_arcLengthPx", cap.get("capArcLengthPx", metrics.get("capArcLengthPx", ""))])
+        if metrics.get("bulletStepInput") is not None:
+            w.writerow(["bulletStepInput", metrics.get("bulletStepInput", "")])
+        if metrics.get("bulletStepUs") is not None:
+            w.writerow(["bulletStepUs", metrics.get("bulletStepUs", "")])
         w.writerow([])
+
+        steps = metrics.get("perBulletStep") or []
+        if steps:
+            w.writerow(["perBulletStep"])
+            w.writerow(
+                ["step", "tMs", "meanX", "stdX", "rangeX", "refX", "maxAbsDevX"]
+            )
+            for row in steps:
+                w.writerow(
+                    [
+                        row.get("step"),
+                        row.get("tMs"),
+                        row.get("meanX"),
+                        row.get("stdX"),
+                        row.get("rangeX"),
+                        row.get("refX"),
+                        row.get("maxAbsDevX"),
+                    ]
+                )
+            w.writerow([])
 
         shortest = metrics.get("shortestTimeRef") or metrics
         mean = metrics.get("meanPathRef") or {}
@@ -163,7 +201,11 @@ def save_metrics_csv(path: Path, metrics: Dict[str, Any]) -> None:
                     "endpointDistPx",
                     "durationMs",
                     "deviationRmsPx",
+                    "deviationRmsXPx",
+                    "deviationRmsYPx",
                     "maxDeviationPx",
+                    "maxDeviationXPx",
+                    "maxDeviationYPx",
                     "excludedTailMs",
                     "isReference",
                 ]
@@ -177,7 +219,11 @@ def save_metrics_csv(path: Path, metrics: Dict[str, Any]) -> None:
                         p.get("endpointDistPx"),
                         p.get("durationMs"),
                         p.get("deviationRmsPx"),
+                        p.get("deviationRmsXPx"),
+                        p.get("deviationRmsYPx"),
                         p.get("maxDeviationPx"),
+                        p.get("maxDeviationXPx"),
+                        p.get("maxDeviationYPx"),
                         p.get("excludedTailMs"),
                         p.get("isReference"),
                     ]
