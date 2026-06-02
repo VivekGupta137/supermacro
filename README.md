@@ -41,6 +41,9 @@ This project is inspired by the following examples:
 - **benchmark/**  
   Contains performance and latency measurement data for different USB and SPI configurations.
 
+- **recoil-path-analyzer/**  
+  Windows GUI tool to record cursor paths during LMB+RMB spray tests and export JSON/CSV metrics for profile tuning.
+
 ---
 
 ## System Architecture

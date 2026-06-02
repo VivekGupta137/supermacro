@@ -1,0 +1,7 @@
+sessions/*
+!sessions/.gitkeep
+__pycache__/
+*.pyc
+.venv/
+Lib/
+Scripts/
