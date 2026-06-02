@@ -41,19 +41,17 @@ static bool s_pending_button_only;
 static void hid_queue_report(hid_transmit_t report);
 static bool hid_mouse_merge_spread_drip(hid_mouse_report_t *m);
 static uint32_t hid_mouse_drip_interval_us(void);
+static bool hid_macro_emit_drip_report(void);
 static void hid_spread_flush_remainder_immediate(void);
+static void hid_spread_deliver_instant_segment(void);
+static void hid_spread_schedule_delivery(void);
+static void hid_spread_timer_cb(void *arg);
 
 
 static bool hid_spread_pending(void)
 {
     return s_sent_mx != s_target_mx || s_sent_my != s_target_my || s_sent_mw != s_target_mw ||
            s_sent_mp != s_target_mp;
-}
-
-
-static bool hid_mouse_spread_enabled(void)
-{
-    return hid_mouse_drip_interval_us() > 0;
 }
 
 
@@ -78,6 +76,40 @@ static void hid_spread_drip_timer_stop(void)
     if (s_drip_timer != NULL && esp_timer_is_active(s_drip_timer)) {
         esp_timer_stop(s_drip_timer);
     }
+}
+
+
+/** Deliver full step delta immediately (dripMs=0), then clear segment. */
+static void hid_spread_deliver_instant_segment(void)
+{
+    hid_spread_flush_remainder_immediate();
+    hid_spread_reset_segment();
+}
+
+
+/** Arm one-shot (dripMs=0) or periodic (dripMs>0) delivery for the active segment. */
+static void hid_spread_schedule_delivery(void)
+{
+    if (!hid_spread_pending() || s_drip_timer == NULL) {
+        return;
+    }
+
+    const uint32_t drip_us = hid_mouse_drip_interval_us();
+    hid_spread_drip_timer_stop();
+
+    if (drip_us > 0) {
+        esp_timer_start_periodic(s_drip_timer, drip_us);
+        return;
+    }
+
+    int64_t now = esp_timer_get_time();
+    int64_t fire_at = s_spread_start_us;
+    if (fire_at <= now) {
+        hid_spread_deliver_instant_segment();
+        hid_wake_pump();
+        return;
+    }
+    esp_timer_start_once(s_drip_timer, (uint64_t)(fire_at - now));
 }
 
 /** Elapsed progress 0..goal across the bullet spread window (smooth in wall time). */
@@ -162,7 +194,7 @@ static int8_t hid_take_drip_axis_spread(int16_t target, int16_t *sent, uint32_t 
 
 static bool hid_mouse_merge_spread_drip(hid_mouse_report_t *m)
 {
-    if (!hid_mouse_spread_enabled() || !hid_spread_pending()) {
+    if (!hid_spread_pending()) {
         return false;
     }
 
@@ -183,7 +215,7 @@ static bool hid_mouse_merge_spread_drip(hid_mouse_report_t *m)
 }
 
 
-static void hid_drip_timer_stop_if_idle(void)
+static void hid_spread_timer_stop_if_idle(void)
 {
     if (hid_spread_pending() || s_drip_timer == NULL) {
         return;
@@ -192,16 +224,23 @@ static void hid_drip_timer_stop_if_idle(void)
 }
 
 
-static void hid_drip_timer_ensure_running(void)
+static void hid_spread_timer_cb(void *arg)
 {
-    const uint32_t drip_us = hid_mouse_drip_interval_us();
-    if (drip_us == 0 || s_drip_timer == NULL) {
+    (void)arg;
+    if (!hid_spread_pending()) {
+        hid_spread_timer_stop_if_idle();
         return;
     }
-    if (esp_timer_is_active(s_drip_timer)) {
+
+    if (hid_mouse_drip_interval_us() == 0) {
+        hid_spread_deliver_instant_segment();
+        hid_spread_drip_timer_stop();
+        hid_wake_pump();
         return;
     }
-    esp_timer_start_periodic(s_drip_timer, drip_us);
+
+    (void)hid_macro_emit_drip_report();
+    hid_spread_timer_stop_if_idle();
 }
 
 
@@ -210,12 +249,11 @@ void hid_mouse_drip_apply_interval(void)
     if (s_drip_timer == NULL) {
         return;
     }
-    const uint32_t drip_us = hid_mouse_drip_interval_us();
     if (esp_timer_is_active(s_drip_timer)) {
         esp_timer_stop(s_drip_timer);
     }
-    if (drip_us > 0 && hid_spread_pending()) {
-        esp_timer_start_periodic(s_drip_timer, drip_us);
+    if (hid_spread_pending()) {
+        hid_spread_schedule_delivery();
     }
 }
 
@@ -238,19 +276,6 @@ static bool hid_macro_emit_drip_report(void)
         return true;
     }
     return false;
-}
-
-
-static void hid_drip_timer_cb(void *arg)
-{
-    (void)arg;
-    if (!hid_spread_pending()) {
-        hid_drip_timer_stop_if_idle();
-        return;
-    }
-
-    (void)hid_macro_emit_drip_report();
-    hid_drip_timer_stop_if_idle();
 }
 
 
@@ -318,14 +343,12 @@ void hid_macro_flush_mouse_spread(void)
 
     hid_spread_drip_timer_stop();
 
-    if (!hid_mouse_spread_enabled()) {
-        hid_spread_flush_remainder_immediate();
-        hid_spread_reset_segment();
+    s_last_drip_tick = 0;
+    if (hid_mouse_drip_interval_us() == 0) {
+        hid_spread_deliver_instant_segment();
         return;
     }
 
-    /* Finish segment at phase end; drip loop, then any int8 residue (IMP-2). */
-    s_last_drip_tick = 0;
     for (unsigned n = 0; n < 64u && hid_spread_pending(); n++) {
         (void)hid_macro_emit_drip_report();
     }
@@ -343,13 +366,6 @@ void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan,
         return;
     }
 
-
-    if (!hid_mouse_spread_enabled()) {
-        hid_macro_send_immediate_step16(x, y, wheel, pan);
-        return;
-    }
-
-
     /* IMP-3: discard unfinished prior segment (IMP-2 should have flushed). */
     if (hid_spread_pending()) {
         hid_macro_flush_mouse_spread();
@@ -357,7 +373,6 @@ void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan,
 
     hid_spread_drip_timer_stop();
 
-    int64_t now = esp_timer_get_time();
     const uint32_t drip_us = hid_mouse_drip_interval_us();
 
     s_target_mx = x;
@@ -372,17 +387,24 @@ void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan,
         s_spread_start_us = phase_start_us;
         s_spread_end_us = phase_start_us + (int64_t)spread_us;
     } else {
+        int64_t now = esp_timer_get_time();
         s_spread_start_us = now;
         s_spread_end_us = now + (int64_t)spread_us;
     }
-    s_spread_drip_goal = drip_us > 0 ? (spread_us + drip_us - 1u) / drip_us : 1u;
+    if (drip_us > 0) {
+        s_spread_drip_goal = (spread_us + drip_us - 1u) / drip_us;
+    } else {
+        s_spread_drip_goal = 1;
+    }
     if (s_spread_drip_goal == 0) {
         s_spread_drip_goal = 1;
     }
     s_last_drip_tick = 0;
 
-    hid_drip_timer_ensure_running();
-    (void)hid_macro_emit_drip_report();
+    hid_spread_schedule_delivery();
+    if (drip_us > 0) {
+        (void)hid_macro_emit_drip_report();
+    }
     hid_wake_pump();
 }
 
@@ -524,7 +546,7 @@ void hid_init_multiplexer()
 
 
     esp_timer_create_args_t drip_args = {
-        .callback = &hid_drip_timer_cb,
+        .callback = &hid_spread_timer_cb,
         .name = "hid_mouse_drip",
     };
     ESP_ERROR_CHECK(esp_timer_create(&drip_args, &s_drip_timer));
