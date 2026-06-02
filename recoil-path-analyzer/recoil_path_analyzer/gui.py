@@ -75,6 +75,7 @@ class RecoilPathApp(tk.Tk):
         self._live_attempt: Optional[Attempt] = None
         self._live_fit_done = False
         self._metrics_mode = "shortestTimeRef"
+        self._last_export_paths: List[Path] = []
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -196,7 +197,16 @@ class RecoilPathApp(tk.Tk):
 
         self._metrics_notebook.bind("<<NotebookTabChanged>>", self._on_metrics_tab_changed)
 
-        ttk.Label(right, text="Last export", font=("", 10, "bold")).pack(anchor=tk.W, pady=(8, 0))
+        export_header = ttk.Frame(right)
+        export_header.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(export_header, text="Last export", font=("", 10, "bold")).pack(side=tk.LEFT)
+        self.btn_copy_export = ttk.Button(
+            export_header,
+            text="Copy paths",
+            command=self._copy_last_export_paths,
+            state=tk.DISABLED,
+        )
+        self.btn_copy_export.pack(side=tk.RIGHT)
         self.var_export = tk.StringVar(value="—")
         ttk.Label(right, textvariable=self.var_export, wraplength=280).pack(anchor=tk.W, pady=(4, 0))
 
@@ -219,6 +229,19 @@ class RecoilPathApp(tk.Tk):
         else:
             return
         self._plot_attempts(auto_fit=True)
+
+    def _copy_last_export_paths(self) -> None:
+        if not self._last_export_paths:
+            return
+        text = "\n".join(str(p.resolve()) for p in self._last_export_paths)
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.var_status.set(f"Copied {len(self._last_export_paths)} export path(s) to clipboard.")
+
+    def _set_last_export(self, paths: List[Path], display_lines: List[str]) -> None:
+        self._last_export_paths = paths
+        self.var_export.set("\n".join(display_lines))
+        self.btn_copy_export.config(state=tk.NORMAL if paths else tk.DISABLED)
 
     def _open_sessions(self) -> None:
         self._output_dir.mkdir(parents=True, exist_ok=True)
@@ -386,9 +409,7 @@ class RecoilPathApp(tk.Tk):
         if not self._attempts:
             return []
 
-        timed = [a.relative_points_timed() for a in self._attempts]
-        capped, ref_idx, cap_ms = cap_paths_to_shortest_time(timed)[:3]
-        cap_t_us = int(cap_ms * 1000) if cap_ms > 0 else 0
+        capped, ref_idx, ref_path, cap_ms, cap_t_us = self._capped_paths_for_plot()
         bullet_markers, bullet_label = self._bullet_markers_for_plot(cap_t_us)
         stacked = attempts_to_arrays(capped, N_SAMPLES)
         mean_ref = [(float(x), float(y)) for x, y in mean_path_from_stack(stacked)]
@@ -396,27 +417,42 @@ class RecoilPathApp(tk.Tk):
             [(float(x), float(y)) for x, y in stacked[ref_idx]] if ref_idx >= 0 else []
         )
 
-        xlim, ylim = self._plot_axis_limits or auto_axis_limits(capped)
+        xlim, ylim = self._plot_axis_limits or auto_axis_limits(
+            capped, None, bullet_markers or None
+        )
+        plot_kw = {
+            "ref_idx": ref_idx,
+            "cap_ms": cap_ms,
+            "xlim": xlim,
+            "ylim": ylim,
+            "bullet_markers": bullet_markers or None,
+            "bullet_interval_label": bullet_label,
+            "show_trace_lines": bool(self.var_show_traces.get()),
+            "show_bullet_step_lines": self._show_bullet_step_lines(),
+        }
         saved: list[Path] = []
-        exports = (
+
+        view_out = base.with_name(base.name + "_plot").with_suffix(".png")
+        save_path_plot(
+            view_out,
+            capped,
+            ref_path=ref_path,
+            metrics_mode=self._metrics_mode,
+            **plot_kw,
+        )
+        saved.append(view_out)
+
+        for mode, ref_path_mode, suffix in (
             ("shortestTimeRef", shortest_ref, "shortest_time"),
             ("meanPathRef", mean_ref, "mean_path"),
-        )
-        for mode, ref_path, suffix in exports:
+        ):
             out = base.with_name(base.name + f"_plot_{suffix}.png")
             save_path_plot(
                 out,
                 capped,
-                ref_idx=ref_idx,
-                ref_path=ref_path,
-                cap_ms=cap_ms,
+                ref_path=ref_path_mode,
                 metrics_mode=mode,
-                xlim=xlim,
-                ylim=ylim,
-                bullet_markers=bullet_markers or None,
-                bullet_interval_label=bullet_label,
-                show_trace_lines=bool(self.var_show_traces.get()),
-                show_bullet_step_lines=self._show_bullet_step_lines(),
+                **plot_kw,
             )
             saved.append(out)
         return saved
@@ -539,6 +575,25 @@ class RecoilPathApp(tk.Tk):
             label = self.var_profile.get().strip() or "session"
             safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)
             base = self._output_dir / f"{safe}_{stamp}"
+            json_path = base.with_suffix(".json")
+            csv_path = base.with_name(base.name + "_points").with_suffix(".csv")
+            metrics_path = base.with_name(base.name + "_metrics").with_suffix(".csv")
+            save_session_csv(csv_path, self._attempts)
+            save_metrics_csv(metrics_path, self._metrics)
+            plot_paths = self._export_plot_pngs(base)
+            plot_view = plot_paths[0] if plot_paths else None
+            plot_shortest = plot_paths[1] if len(plot_paths) > 1 else None
+            plot_mean = plot_paths[2] if len(plot_paths) > 2 else None
+            exports_meta: dict[str, str] = {
+                "pointsCsv": csv_path.name,
+                "metricsCsv": metrics_path.name,
+            }
+            if plot_view:
+                exports_meta["plotPng"] = plot_view.name
+            if plot_shortest:
+                exports_meta["plotShortestTimePng"] = plot_shortest.name
+            if plot_mean:
+                exports_meta["plotMeanPathPng"] = plot_mean.name
             doc = build_session_document(
                 self._attempts,
                 profile_label=self.var_profile.get(),
@@ -546,18 +601,13 @@ class RecoilPathApp(tk.Tk):
                 debug_mode=bool(self.var_debug.get()),
                 poll_hz=float(self.var_poll_hz.get()),
                 metrics=self._metrics,
+                exports=exports_meta,
             )
-            json_path = base.with_suffix(".json")
-            csv_path = base.with_name(base.name + "_points").with_suffix(".csv")
-            metrics_path = base.with_name(base.name + "_metrics").with_suffix(".csv")
             save_session_json(json_path, doc)
-            save_session_csv(csv_path, self._attempts)
-            save_metrics_csv(metrics_path, self._metrics)
-            plot_paths = self._export_plot_pngs(base)
-            export_lines = [json_path.name, csv_path.name, metrics_path.name]
-            export_lines.extend(p.name for p in plot_paths)
+            export_paths = [json_path, csv_path, metrics_path, *plot_paths]
+            export_lines = [p.name for p in export_paths]
             export_lines.append(f"→ {self._output_dir}")
-            self.var_export.set("\n".join(export_lines))
+            self._set_last_export(export_paths, export_lines)
             self.var_status.set(
                 f"Done — {len(self._attempts)} attempt(s). Files saved to sessions/."
             )

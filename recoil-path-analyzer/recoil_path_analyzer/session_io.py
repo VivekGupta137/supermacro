@@ -38,8 +38,9 @@ def build_session_document(
     debug_mode: bool,
     poll_hz: float,
     metrics: Optional[Dict[str, Any]] = None,
+    exports: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
-    return {
+    doc: Dict[str, Any] = {
         "schema": SCHEMA,
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "profileLabel": profile_label,
@@ -50,6 +51,9 @@ def build_session_document(
         "metrics": _metrics_for_export(metrics),
         "attempts": [attempt_to_dict(a, i) for i, a in enumerate(attempts)],
     }
+    if exports:
+        doc["exports"] = exports
+    return doc
 
 
 def _strip_paths_block(block: Optional[Dict[str, Any]]) -> Dict[str, Any]:
