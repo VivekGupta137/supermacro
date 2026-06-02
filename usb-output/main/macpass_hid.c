@@ -29,7 +29,7 @@ static int16_t s_sent_mw;
 static int16_t s_sent_mp;
 static int64_t s_spread_start_us;
 static int64_t s_spread_end_us;
-static int64_t s_last_drip_us;
+static uint32_t s_last_drip_tick;
 static uint32_t s_spread_drip_goal;
 static esp_timer_handle_t s_drip_timer;
 
@@ -70,6 +70,7 @@ static void hid_spread_reset_segment(void)
     s_spread_start_us = 0;
     s_spread_end_us = 0;
     s_spread_drip_goal = 0;
+    s_last_drip_tick = 0;
 }
 
 static void hid_spread_drip_timer_stop(void)
@@ -165,16 +166,12 @@ static bool hid_mouse_merge_spread_drip(hid_mouse_report_t *m)
         return false;
     }
 
-
-    int64_t now = esp_timer_get_time();
-    const uint32_t drip_us = hid_mouse_drip_interval_us();
-    if (s_last_drip_us != 0 && (now - s_last_drip_us) < (int64_t)drip_us) {
-        return false;
-    }
-    s_last_drip_us = now;
-
     const uint32_t goal = s_spread_drip_goal;
     const uint32_t tick = hid_spread_elapsed_tick(goal);
+    if (tick <= s_last_drip_tick && tick < goal) {
+        return false;
+    }
+    s_last_drip_tick = tick;
 
     hid_mouse_report_t drip = {0};
     drip.x = hid_take_drip_axis_spread(s_target_mx, &s_sent_mx, tick, goal);
@@ -324,13 +321,11 @@ void hid_macro_flush_mouse_spread(void)
     if (!hid_mouse_spread_enabled()) {
         hid_spread_flush_remainder_immediate();
         hid_spread_reset_segment();
-        s_last_drip_us = 0;
         return;
     }
 
-    /* Finish segment: snap window to end, drip loop, then any int8 residue (IMP-2). */
-    s_spread_end_us = esp_timer_get_time();
-    s_last_drip_us = 0;
+    /* Finish segment at phase end; drip loop, then any int8 residue (IMP-2). */
+    s_last_drip_tick = 0;
     for (unsigned n = 0; n < 64u && hid_spread_pending(); n++) {
         (void)hid_macro_emit_drip_report();
     }
@@ -338,11 +333,11 @@ void hid_macro_flush_mouse_spread(void)
         hid_spread_flush_remainder_immediate();
     }
     hid_spread_reset_segment();
-    s_last_drip_us = 0;
 }
 
 
-void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan, uint32_t spread_us)
+void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan, uint32_t spread_us,
+                               int64_t phase_start_us)
 {
     if (x == 0 && y == 0 && wheel == 0 && pan == 0) {
         return;
@@ -370,16 +365,21 @@ void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan,
     s_target_mw = wheel;
     s_target_mp = pan;
     s_sent_mx = s_sent_my = s_sent_mw = s_sent_mp = 0;
-    s_spread_start_us = now;
     if (spread_us < 1000u) {
         spread_us = 1000u;
     }
-    s_spread_end_us = now + (int64_t)spread_us;
+    if (phase_start_us > 0) {
+        s_spread_start_us = phase_start_us;
+        s_spread_end_us = phase_start_us + (int64_t)spread_us;
+    } else {
+        s_spread_start_us = now;
+        s_spread_end_us = now + (int64_t)spread_us;
+    }
     s_spread_drip_goal = drip_us > 0 ? (spread_us + drip_us - 1u) / drip_us : 1u;
     if (s_spread_drip_goal == 0) {
         s_spread_drip_goal = 1;
     }
-    s_last_drip_us = 0;
+    s_last_drip_tick = 0;
 
     hid_drip_timer_ensure_running();
     (void)hid_macro_emit_drip_report();
@@ -391,7 +391,6 @@ void hid_macro_cancel_mouse_spread(void)
 {
     hid_spread_drip_timer_stop();
     hid_spread_reset_segment();
-    s_last_drip_us = 0;
 }
 
 

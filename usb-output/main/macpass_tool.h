@@ -276,11 +276,12 @@ static inline void reset_sequence(key_modification_sequence_t *sequence, bool ca
     sequence->previous_key.header = 0;
     sequence->started_time = esp_timer_get_time();
     sequence->waited_sum = 0;
-    sequence->last_step_fire_us = 0;
-    sequence->is_recording = false;
     if (cancel_mouse_spread) {
+        sequence->schedule_anchor_us = 0;
+        sequence->schedule_phase_us = 0;
         macro_after_sequence_reset();
     }
+    sequence->is_recording = false;
 }
 
 static inline void add_keyboard_record(key_modification_sequence_t* sequence, const hid_transmit_t report){

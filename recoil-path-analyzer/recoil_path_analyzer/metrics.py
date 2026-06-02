@@ -390,18 +390,27 @@ def timed_paths_to_arrays(
     timed_paths: Sequence[Sequence[TimedPoint]],
     cap_t_us: int,
     n_samples: int = N_SAMPLES,
+    *,
+    align_to_first_motion: bool = True,
 ) -> np.ndarray:
-    """Resample each path at uniform time steps through cap_t_us (for bullet-timed comparison)."""
+    """Resample at uniform time through cap; optionally shift to shared first-motion phase."""
     if cap_t_us <= 0:
         return np.zeros((len(timed_paths), n_samples, 2), dtype=np.float64)
-    ts = np.linspace(0.0, float(cap_t_us), n_samples)
+    phase_t_us = shared_bullet_phase_us(
+        timed_paths, align_to_first_motion=align_to_first_motion
+    )
+    macro_cap_us = max(0, cap_t_us - phase_t_us)
+    if macro_cap_us <= 0:
+        return np.zeros((len(timed_paths), n_samples, 2), dtype=np.float64)
+    ts = np.linspace(0.0, float(macro_cap_us), n_samples)
     rows = []
     for tp in timed_paths:
         if not tp:
             rows.append(np.zeros((n_samples, 2), dtype=np.float64))
             continue
         row = np.array(
-            [interpolate_timed_path(tp, int(t)) for t in ts], dtype=np.float64
+            [interpolate_timed_path(tp, int(phase_t_us + t)) for t in ts],
+            dtype=np.float64,
         )
         rows.append(row)
     return np.array(rows, dtype=np.float64)
@@ -528,7 +537,12 @@ def compute_session_metrics(
         return {}
 
     cap_t_us = int(cap_ms * 1000)
-    stacked = timed_paths_to_arrays(timed_paths, cap_t_us, N_SAMPLES)
+    stacked = timed_paths_to_arrays(
+        timed_paths,
+        cap_t_us,
+        N_SAMPLES,
+        align_to_first_motion=align_bullet_to_first_motion,
+    )
     ref_stack = stacked[ref_idx]
     mean_stack = mean_path_from_stack(stacked)
 

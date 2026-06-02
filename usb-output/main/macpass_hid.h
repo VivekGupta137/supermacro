@@ -8,7 +8,8 @@ void hid_wake_pump(void);
 void hid_add_report(hid_transmit_t report);
 
 /** Queue a macro step delta; drips out on a timer and on SPI mouse reports (rate-limited). */
-void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan, uint32_t step_us);
+void hid_macro_feed_mouse_step(int16_t x, int16_t y, int16_t wheel, int16_t pan, uint32_t step_us,
+                               int64_t phase_start_us);
 /** Send all pending spread remainder immediately; clears segment. */
 void hid_macro_flush_mouse_spread(void);
 void hid_macro_cancel_mouse_spread(void);

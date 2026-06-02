@@ -167,32 +167,25 @@ static void macro_flush_pending_starts(void)
     macro_pending_starts_clear();
 }
 
-/** Arm timer for step at `sequence->pos`; always stop before re-arm. */
-static void macro_arm_step_timer(key_modification_sequence_t *sequence, uint32_t delay_us)
+/** Arm timer for absolute phase deadline; always stop before re-arm. */
+static void macro_arm_step_timer_abs(key_modification_sequence_t *sequence, int64_t target_us,
+                                     uint32_t nominal_us)
 {
     if (!sequence->timer) {
         return;
     }
     esp_timer_stop(sequence->timer);
-    if (delay_us == 0) {
-        esp_timer_start_once(sequence->timer, 1);
-        return;
-    }
 
     int64_t now = esp_timer_get_time();
-
-    /* Schedule from last step fire + nominal delay (recoil-smoothing-2 style). */
-    if (sequence->last_step_fire_us == 0) {
-        sequence->last_step_fire_us = now;
+    if (target_us <= now) {
+        uint64_t catchup = 1;
+        if (macro_profile_humanize_timing_active()) {
+            catchup = macro_profile_catchup_delay_us(nominal_us);
+        }
+        esp_timer_start_once(sequence->timer, catchup);
+        return;
     }
-    int64_t target = sequence->last_step_fire_us + (int64_t)delay_us;
-    if (target > now) {
-        esp_timer_start_once(sequence->timer, (uint64_t)(target - now));
-    } else if (macro_profile_humanize_timing_active()) {
-        esp_timer_start_once(sequence->timer, macro_profile_catchup_delay_us(delay_us));
-    } else {
-        esp_timer_start_once(sequence->timer, 1);
-    }
+    esp_timer_start_once(sequence->timer, (uint64_t)(target_us - now));
 }
 
 /** int16 step deltas; fallback to int8 in `event.mouse` for compile-time defaults. */
@@ -247,6 +240,8 @@ static void macro_try_start_press_mode(int started_idx, key_modification_sequenc
 #endif
     macro_reset_mode_set_peers(started_idx, sequence->mode_set);
     reset_sequence(sequence, true);
+    sequence->schedule_anchor_us = esp_timer_get_time();
+    sequence->schedule_phase_us = 0;
     macro_queue_start(sequence);
 }
 
@@ -514,10 +509,15 @@ void macro_sequence_callback(void* arg) {
         hid_macro_flush_mouse_spread();
 
         const uint32_t nominal_us = step_ev->duration;
+        if (key_seq->schedule_anchor_us == 0) {
+            key_seq->schedule_phase_us = 0;
+            key_seq->schedule_anchor_us = esp_timer_get_time();
+        }
+        const int64_t phase_start_us = key_seq->schedule_anchor_us + key_seq->schedule_phase_us;
         step_delay_us = macro_profile_step_delay_us(nominal_us);
         step_delay_valid = true;
-        hid_macro_feed_mouse_step(mx, my, mw, mp, nominal_us);
-        key_seq->last_step_fire_us = esp_timer_get_time();
+        hid_macro_feed_mouse_step(mx, my, mw, mp, nominal_us, phase_start_us);
+        key_seq->schedule_phase_us += (int64_t)nominal_us;
 #if USB_OUTPUT_PERF_LOG_ENABLE
         perf_stat_bump(PERF_MACRO_TICK_MOUSE);
 #endif
@@ -552,19 +552,31 @@ void macro_sequence_callback(void* arg) {
     }
 
     if (step_delay_valid) {
-        macro_arm_step_timer(key_seq, step_delay_us);
+        int64_t target_us = key_seq->schedule_anchor_us + key_seq->schedule_phase_us;
+        if (macro_profile_humanize_timing_active()) {
+            target_us += (int64_t)step_delay_us - (int64_t)step_ev->duration;
+        }
+        macro_arm_step_timer_abs(key_seq, target_us, step_ev->duration);
     } else {
-        macro_arm_step_timer(key_seq, 0);
+        macro_arm_step_timer_abs(key_seq, esp_timer_get_time(), 0);
     }
     xSemaphoreGive(s_seq_mux);
 }
 
 void start_sequence_with_delay(key_modification_sequence_t *sequence, uint32_t step_us)
 {
-    macro_arm_step_timer(sequence, step_us);
+    if (sequence->schedule_anchor_us == 0) {
+        sequence->schedule_phase_us = 0;
+        sequence->schedule_anchor_us = esp_timer_get_time();
+    }
+    macro_arm_step_timer_abs(sequence, sequence->schedule_anchor_us + (int64_t)step_us, step_us);
 }
 
 void start_sequence(key_modification_sequence_t *sequence)
 {
-    macro_arm_step_timer(sequence, 0);
+    if (sequence->schedule_anchor_us == 0) {
+        sequence->schedule_phase_us = 0;
+        sequence->schedule_anchor_us = esp_timer_get_time();
+    }
+    macro_arm_step_timer_abs(sequence, sequence->schedule_anchor_us, 0);
 }

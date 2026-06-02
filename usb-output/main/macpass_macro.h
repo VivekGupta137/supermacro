@@ -42,8 +42,10 @@ typedef struct {
     uint8_t pos;
     int64_t started_time;
     int64_t waited_sum;
-    /** Wall-clock time last mouse step callback ran (µs); used for bullet scheduling. */
-    int64_t last_step_fire_us;
+    /** Spray start anchor (µs); set when step 0 fires. Preserved across loop wrap. */
+    int64_t schedule_anchor_us;
+    /** Cumulative nominal step duration since anchor; preserved across loop wrap. */
+    int64_t schedule_phase_us;
     bool is_recording;
     esp_timer_handle_t timer;
     esp_timer_create_args_t timer_args;
