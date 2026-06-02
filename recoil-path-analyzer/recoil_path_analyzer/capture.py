@@ -11,13 +11,14 @@ from typing import Callable, List, Optional, Tuple
 VK_LBUTTON = 0x01
 VK_RBUTTON = 0x02
 
+user32 = ctypes.windll.user32
+
 
 class POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
 
 def _buttons_down() -> Tuple[bool, bool]:
-    user32 = ctypes.windll.user32
     lmb = bool(user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
     rmb = bool(user32.GetAsyncKeyState(VK_RBUTTON) & 0x8000)
     return lmb, rmb
@@ -30,9 +31,9 @@ def chord_ads_down() -> bool:
 
 def get_cursor_pos() -> Tuple[int, int]:
     pt = POINT()
-    if not ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
-        return 0, 0
-    return int(pt.x), int(pt.y)
+    if user32.GetCursorPos(ctypes.byref(pt)):
+        return int(pt.x), int(pt.y)
+    return 0, 0
 
 
 @dataclass
@@ -58,6 +59,19 @@ class Attempt:
         return [(p.x - self.origin_x, p.y - self.origin_y, p.t_us) for p in self.points]
 
 
+def _append_sample(
+    attempt: Attempt,
+    t0: float,
+    now: float,
+    x: int,
+    y: int,
+    on_point: Optional[Callable[[Attempt], None]],
+) -> None:
+    attempt.points.append(PathPoint(int((now - t0) * 1_000_000), x, y))
+    if on_point:
+        on_point(attempt)
+
+
 def record_attempt(
     poll_interval_s: float,
     stop_check,
@@ -68,6 +82,9 @@ def record_attempt(
     Wait for LMB+RMB, record until either released.
     stop_check: callable returning True to abort wait/recording.
     on_point: optional callback after each sampled point (for live UI).
+
+    Samples on every position change (fast poll) plus periodic heartbeats at
+    poll_interval_s when the cursor is stationary.
     """
     debounce_until = 0.0
     while not stop_check():
@@ -92,20 +109,28 @@ def record_attempt(
         origin_x=ox,
         origin_y=oy,
     )
-    attempt.points.append(PathPoint(0, ox, oy))
-    if on_point:
-        on_point(attempt)
+    heartbeat_s = max(poll_interval_s, 1e-5)
+    last_x, last_y = ox, oy
+    last_sample_t = t0
+    _append_sample(attempt, t0, t0, ox, oy, on_point)
 
-    next_poll = t0
     while chord_ads_down() and not stop_check():
         now = time.perf_counter()
-        if now >= next_poll:
-            x, y = get_cursor_pos()
-            attempt.points.append(PathPoint(int((now - t0) * 1_000_000), x, y))
-            next_poll = now + poll_interval_s
-            if on_point:
-                on_point(attempt)
-        time.sleep(0.0005)
+        x, y = get_cursor_pos()
+        moved = x != last_x or y != last_y
+        due = (now - last_sample_t) >= heartbeat_s
+        if moved or due:
+            _append_sample(attempt, t0, now, x, y, on_point)
+            last_x, last_y = x, y
+            last_sample_t = now
+            if moved:
+                continue
+        time.sleep(0.00005)
+
+    now = time.perf_counter()
+    x, y = get_cursor_pos()
+    if x != last_x or y != last_y or (now - last_sample_t) >= heartbeat_s * 0.5:
+        _append_sample(attempt, t0, now, x, y, on_point)
 
     attempt.duration_ms = (time.perf_counter() - t0) * 1000.0
     return attempt if len(attempt.points) >= 2 else None
