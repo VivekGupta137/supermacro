@@ -28,10 +28,13 @@ from .plot_paths import (
 from .metrics import (
     N_SAMPLES,
     attempts_to_arrays,
+    bullet_step_marker_points,
     cap_paths_to_shortest_time,
     compute_session_metrics,
     format_metrics_text,
+    last_sample_time_us,
     mean_path_from_stack,
+    parse_bullet_interval_us,
 )
 from .docs_viewer import show_docs_modal
 from .session_io import (
@@ -106,6 +109,50 @@ class RecoilPathApp(tk.Tk):
             text="Profile debugMode (note only — hands-off on device)",
             variable=self.var_debug,
         ).grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=(6, 0))
+
+        self.var_bullet_markers = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            top,
+            text="Bullet step markers",
+            variable=self.var_bullet_markers,
+            command=self._on_plot_display_changed,
+        ).grid(row=3, column=0, sticky=tk.W, pady=(6, 0))
+
+        ttk.Label(top, text="Step interval:").grid(row=3, column=1, sticky=tk.E, padx=(8, 4), pady=(6, 0))
+        self.var_bullet_interval = tk.StringVar(value="133300")
+        self.ent_bullet_interval = ttk.Entry(top, textvariable=self.var_bullet_interval, width=10)
+        self.ent_bullet_interval.grid(row=3, column=2, sticky=tk.W, pady=(6, 0))
+        self.var_bullet_unit = tk.StringVar(value="us")
+        self.cmb_bullet_unit = ttk.Combobox(
+            top,
+            textvariable=self.var_bullet_unit,
+            values=("us", "ms"),
+            width=4,
+            state="readonly",
+        )
+        self.cmb_bullet_unit.grid(row=3, column=3, sticky=tk.W, pady=(6, 0))
+        self.var_bullet_interval.trace_add("write", self._on_bullet_settings_trace)
+        self.var_bullet_unit.trace_add("write", self._on_bullet_settings_trace)
+
+        self.var_bullet_step_lines = tk.BooleanVar(value=True)
+        self.chk_bullet_step_lines = ttk.Checkbutton(
+            top,
+            text="Step vertical lines",
+            variable=self.var_bullet_step_lines,
+            command=self._on_plot_display_changed,
+        )
+        self.chk_bullet_step_lines.grid(row=3, column=4, sticky=tk.W, padx=(12, 0), pady=(6, 0))
+
+        self.var_bullet_markers.trace_add("write", self._on_bullet_markers_trace)
+        self._on_bullet_markers_trace()
+
+        self.var_show_traces = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            top,
+            text="Show trace lines",
+            variable=self.var_show_traces,
+            command=self._on_plot_display_changed,
+        ).grid(row=4, column=0, sticky=tk.W, pady=(6, 0))
 
         btn_row = ttk.Frame(self, padding=(8, 0))
         btn_row.pack(fill=tk.X)
@@ -208,12 +255,63 @@ class RecoilPathApp(tk.Tk):
             "meanPathRef",
         )
 
-    def _capped_paths_for_plot(self) -> tuple[list, int, list, float]:
+    def _on_bullet_markers_trace(self, *_args) -> None:
+        enabled = bool(self.var_bullet_markers.get())
+        state = tk.NORMAL if enabled else tk.DISABLED
+        self.chk_bullet_step_lines.config(state=state)
+        self._on_plot_display_changed()
+
+    def _on_bullet_settings_trace(self, *_args) -> None:
+        if str(self.var_bullet_unit.get()) not in ("us", "ms"):
+            return
+        self._on_plot_display_changed()
+
+    def _on_plot_display_changed(self) -> None:
+        if self._attempts or self._live_attempt:
+            self._plot_attempts(auto_fit=False)
+
+    def _bullet_interval_us(self) -> int | None:
+        try:
+            return parse_bullet_interval_us(
+                self.var_bullet_interval.get(),
+                self.var_bullet_unit.get(),
+            )
+        except ValueError:
+            return None
+
+    def _bullet_interval_label(self) -> str | None:
+        interval_us = self._bullet_interval_us()
+        if interval_us is None:
+            return None
+        if self.var_bullet_unit.get() == "ms":
+            return f"{interval_us / 1000:.3g} ms"
+        if interval_us >= 1000 and interval_us % 1000 == 0:
+            return f"{interval_us // 1000} ms"
+        return f"{interval_us} µs"
+
+    def _bullet_markers_for_plot(self, cap_t_us: int) -> tuple[list, str | None]:
+        if not self.var_bullet_markers.get():
+            return [], None
+        interval_us = self._bullet_interval_us()
+        label = self._bullet_interval_label()
+        if interval_us is None or label is None:
+            return [], None
+        timed = [a.relative_points_timed() for a in self._attempts]
+        markers = [
+            bullet_step_marker_points(tp, interval_us, max_t_us=cap_t_us) for tp in timed
+        ]
+        return markers, label
+
+    def _show_bullet_step_lines(self) -> bool:
+        return bool(self.var_bullet_markers.get() and self.var_bullet_step_lines.get())
+
+    def _capped_paths_for_plot(self) -> tuple[list, int, list, float, int]:
         if not self._attempts:
-            return [], -1, [], 0.0
+            return [], -1, [], 0.0, 0
 
         timed = [a.relative_points_timed() for a in self._attempts]
         capped, ref, cap_ms = cap_paths_to_shortest_time(timed)
+        cap_t_us = int(cap_ms * 1000) if cap_ms > 0 else last_sample_time_us(timed[0] if timed else [])
 
         ref_path = self._reference_path_for_mode()
         if not ref_path and capped:
@@ -222,7 +320,7 @@ class RecoilPathApp(tk.Tk):
                 ref_path = [(float(x), float(y)) for x, y in mean_path_from_stack(stacked)]
             elif ref >= 0:
                 ref_path = [(float(x), float(y)) for x, y in stacked[ref]]
-        return capped, ref, ref_path, cap_ms
+        return capped, ref, ref_path, cap_ms, cap_t_us
 
     def _reference_path_for_mode(self) -> list:
         if not self._metrics:
@@ -254,15 +352,16 @@ class RecoilPathApp(tk.Tk):
             self.canvas.draw_idle()
             return
 
-        capped, ref_idx, ref_path, cap_ms = self._capped_paths_for_plot()
+        capped, ref_idx, ref_path, cap_ms, cap_t_us = self._capped_paths_for_plot()
+        bullet_markers, bullet_label = self._bullet_markers_for_plot(cap_t_us)
         if auto_fit:
-            xlim, ylim = auto_axis_limits(capped, live_path)
+            xlim, ylim = auto_axis_limits(capped, live_path, bullet_markers or None)
             self._default_xlim = xlim
             self._default_ylim = ylim
         elif self._default_xlim and self._default_ylim:
             xlim, ylim = self._default_xlim, self._default_ylim
         else:
-            xlim, ylim = auto_axis_limits(capped, live_path)
+            xlim, ylim = auto_axis_limits(capped, live_path, bullet_markers or None)
 
         self._plot_axis_limits = (xlim, ylim)
         draw_capped_paths(
@@ -275,6 +374,10 @@ class RecoilPathApp(tk.Tk):
             live_path=live_path,
             xlim=xlim,
             ylim=ylim,
+            bullet_markers=bullet_markers or None,
+            bullet_interval_label=bullet_label,
+            show_trace_lines=bool(self.var_show_traces.get()),
+            show_bullet_step_lines=self._show_bullet_step_lines(),
         )
         self.fig.tight_layout()
         self.canvas.draw_idle()
@@ -285,6 +388,8 @@ class RecoilPathApp(tk.Tk):
 
         timed = [a.relative_points_timed() for a in self._attempts]
         capped, ref_idx, cap_ms = cap_paths_to_shortest_time(timed)[:3]
+        cap_t_us = int(cap_ms * 1000) if cap_ms > 0 else 0
+        bullet_markers, bullet_label = self._bullet_markers_for_plot(cap_t_us)
         stacked = attempts_to_arrays(capped, N_SAMPLES)
         mean_ref = [(float(x), float(y)) for x, y in mean_path_from_stack(stacked)]
         shortest_ref = (
@@ -308,6 +413,10 @@ class RecoilPathApp(tk.Tk):
                 metrics_mode=mode,
                 xlim=xlim,
                 ylim=ylim,
+                bullet_markers=bullet_markers or None,
+                bullet_interval_label=bullet_label,
+                show_trace_lines=bool(self.var_show_traces.get()),
+                show_bullet_step_lines=self._show_bullet_step_lines(),
             )
             saved.append(out)
         return saved

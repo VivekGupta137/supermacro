@@ -20,6 +20,7 @@ Point = Tuple[float, float]
 def auto_axis_limits(
     capped: Sequence[Sequence[Point]],
     live_path: Optional[Sequence[Point]] = None,
+    bullet_markers: Optional[Sequence[Sequence[Point]]] = None,
 ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
     xs, ys = [], []
     for path in capped:
@@ -30,11 +31,65 @@ def auto_axis_limits(
         for x, y in live_path:
             xs.append(x)
             ys.append(y)
+    if bullet_markers:
+        for markers in bullet_markers:
+            for x, y in markers:
+                xs.append(x)
+                ys.append(y)
     if not xs:
         return (-10.0, 10.0), (10.0, -10.0)
     mx = max((max(xs) - min(xs)) * 0.05, 8.0)
     my = max((max(ys) - min(ys)) * 0.05, 8.0)
     return (min(xs) - mx, max(xs) + mx), (max(ys) + my, min(ys) - my)
+
+
+def reference_bullet_markers(
+    bullet_markers: Sequence[Sequence[Point]],
+    ref_idx: int,
+    metrics_mode: str,
+) -> List[Point]:
+    """Reference bullet-step positions for grid lines (ref attempt or per-step mean)."""
+    if not bullet_markers:
+        return []
+    if metrics_mode == "meanPathRef":
+        n_steps = max(len(m) for m in bullet_markers)
+        out: List[Point] = []
+        for j in range(n_steps):
+            xs = [m[j][0] for m in bullet_markers if j < len(m)]
+            ys = [m[j][1] for m in bullet_markers if j < len(m)]
+            if xs:
+                out.append((sum(xs) / len(xs), sum(ys) / len(ys)))
+        return out
+    if 0 <= ref_idx < len(bullet_markers):
+        return list(bullet_markers[ref_idx])
+    return list(bullet_markers[0])
+
+
+def _draw_bullet_step_vertical_lines(
+    ax: Axes,
+    ref_markers: Sequence[Point],
+    *,
+    scale: float,
+) -> None:
+    for x, _y in ref_markers:
+        ax.axvline(
+            x=x,
+            color="0.45",
+            alpha=0.42,
+            linestyle="--",
+            linewidth=0.75 * scale,
+            zorder=1,
+        )
+    if ref_markers:
+        ax.plot(
+            [],
+            [],
+            color="0.45",
+            linestyle="--",
+            alpha=0.42,
+            linewidth=0.75 * scale,
+            label="bullet step lines",
+        )
 
 
 def draw_capped_paths(
@@ -49,6 +104,10 @@ def draw_capped_paths(
     xlim: Optional[Tuple[float, float]] = None,
     ylim: Optional[Tuple[float, float]] = None,
     scale: float = 1.0,
+    bullet_markers: Optional[Sequence[Sequence[Point]]] = None,
+    bullet_interval_label: Optional[str] = None,
+    show_trace_lines: bool = True,
+    show_bullet_step_lines: bool = False,
 ) -> None:
     """Draw capped path overlay on ax. scale>1 thickens lines/markers for export."""
     ax.clear()
@@ -67,18 +126,51 @@ def draw_capped_paths(
     cap_note = f" @ {cap_ms:.0f} ms" if cap_ms > 0 else ""
     ax.set_title(f"Capped paths{cap_note} — {mode_label}", fontsize=11 * scale)
 
+    if (
+        show_bullet_step_lines
+        and bullet_markers
+        and any(bullet_markers)
+    ):
+        ref_steps = reference_bullet_markers(bullet_markers, ref_idx, metrics_mode)
+        _draw_bullet_step_vertical_lines(ax, ref_steps, scale=scale)
+
     for i, path in enumerate(capped):
         if len(path) < 2:
             continue
         xs = [p[0] for p in path]
         ys = [p[1] for p in path]
         is_ref = metrics_mode == "shortestTimeRef" and i == ref_idx
-        lw = (1.4 if is_ref else 0.9) * scale
-        alpha = 1.0 if is_ref else 0.55
         label = f"#{i + 1} (ref)" if is_ref else f"#{i + 1}"
-        ax.plot(xs, ys, color=colors[i], alpha=alpha, linewidth=lw, label=label)
+        has_bullets = bool(bullet_markers and i < len(bullet_markers) and bullet_markers[i])
 
-    if ref_path and len(ref_path) >= 2 and metrics_mode == "meanPathRef":
+        if show_trace_lines:
+            lw = (1.4 if is_ref else 0.9) * scale
+            alpha = 1.0 if is_ref else 0.55
+            ax.plot(xs, ys, color=colors[i], alpha=alpha, linewidth=lw, label=label)
+
+        if has_bullets:
+            bx = [p[0] for p in bullet_markers[i]]
+            by = [p[1] for p in bullet_markers[i]]
+            ax.scatter(
+                bx,
+                by,
+                s=8 * scale,
+                color=colors[i],
+                alpha=0.95,
+                zorder=6,
+                label=label if not show_trace_lines else None,
+            )
+
+    if bullet_markers and bullet_interval_label:
+        ax.scatter(
+            [],
+            [],
+            s=8 * scale,
+            c="black",
+            label=f"bullet steps ({bullet_interval_label})",
+        )
+
+    if ref_path and len(ref_path) >= 2 and metrics_mode == "meanPathRef" and show_trace_lines:
         ax.plot(
             [p[0] for p in ref_path],
             [p[1] for p in ref_path],
@@ -89,7 +181,7 @@ def draw_capped_paths(
             zorder=4,
         )
 
-    if live_path and len(live_path) >= 2:
+    if live_path and len(live_path) >= 2 and show_trace_lines:
         ax.plot(
             [p[0] for p in live_path],
             [p[1] for p in live_path],
@@ -109,7 +201,7 @@ def draw_capped_paths(
         )
 
     ends = np.array([p[-1] for p in capped if p])
-    if len(ends):
+    if len(ends) and show_trace_lines:
         ax.scatter(
             ends[:, 0],
             ends[:, 1],
@@ -140,6 +232,10 @@ def save_path_plot(
     xlim: Optional[Tuple[float, float]] = None,
     ylim: Optional[Tuple[float, float]] = None,
     dpi: int = EXPORT_DPI,
+    bullet_markers: Optional[Sequence[Sequence[Point]]] = None,
+    bullet_interval_label: Optional[str] = None,
+    show_trace_lines: bool = True,
+    show_bullet_step_lines: bool = False,
 ) -> None:
     """Render and save a high-resolution PNG of the path plot."""
     export_scale = dpi / DISPLAY_DPI
@@ -155,6 +251,10 @@ def save_path_plot(
         xlim=xlim,
         ylim=ylim,
         scale=export_scale,
+        bullet_markers=bullet_markers,
+        bullet_interval_label=bullet_interval_label,
+        show_trace_lines=show_trace_lines,
+        show_bullet_step_lines=show_bullet_step_lines,
     )
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)

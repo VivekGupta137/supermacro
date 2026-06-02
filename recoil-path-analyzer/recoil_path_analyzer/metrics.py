@@ -62,6 +62,59 @@ def trim_path_to_time(
     return out
 
 
+def interpolate_timed_path(timed_path: Sequence[TimedPoint], t_us: int) -> Tuple[float, float]:
+    """Linear interpolation of (x, y) at timestamp t_us."""
+    if not timed_path:
+        return 0.0, 0.0
+    if t_us <= timed_path[0][2]:
+        return timed_path[0][0], timed_path[0][1]
+    if t_us >= timed_path[-1][2]:
+        return timed_path[-1][0], timed_path[-1][1]
+    for i in range(1, len(timed_path)):
+        t_prev = timed_path[i - 1][2]
+        t = timed_path[i][2]
+        if t_us <= t:
+            if t <= t_prev:
+                return timed_path[i][0], timed_path[i][1]
+            u = (t_us - t_prev) / (t - t_prev)
+            x = timed_path[i - 1][0] + u * (timed_path[i][0] - timed_path[i - 1][0])
+            y = timed_path[i - 1][1] + u * (timed_path[i][1] - timed_path[i - 1][1])
+            return x, y
+    return timed_path[-1][0], timed_path[-1][1]
+
+
+def bullet_step_marker_points(
+    timed_path: Sequence[TimedPoint],
+    interval_us: int,
+    max_t_us: int | None = None,
+) -> List[Tuple[float, float]]:
+    """Sample path at t = 0, interval, 2*interval, … up to max_t_us (inclusive)."""
+    if interval_us <= 0 or not timed_path:
+        return []
+    end_t = timed_path[-1][2] if max_t_us is None else min(max_t_us, timed_path[-1][2])
+    out: List[Tuple[float, float]] = []
+    t = 0
+    while t <= end_t:
+        out.append(interpolate_timed_path(timed_path, t))
+        t += interval_us
+    return out
+
+
+def parse_bullet_interval_us(value: str, unit: str) -> int:
+    """Parse user interval string; unit is 'ms' or 'us'. Raises ValueError if invalid."""
+    raw = value.strip()
+    if not raw:
+        raise ValueError("interval is empty")
+    amount = float(raw)
+    if amount <= 0:
+        raise ValueError("interval must be positive")
+    if unit == "ms":
+        return int(round(amount * 1000.0))
+    if unit == "us":
+        return int(round(amount))
+    raise ValueError(f"unknown unit: {unit}")
+
+
 def last_sample_time_us(timed_path: Sequence[TimedPoint]) -> int:
     if not timed_path:
         return 0
