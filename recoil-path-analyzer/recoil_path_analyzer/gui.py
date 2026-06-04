@@ -351,8 +351,9 @@ class RecoilPathApp(tk.Tk):
         cap_t_us = int(cap_ms * 1000) if cap_ms > 0 else last_sample_time_us(timed[0] if timed else [])
 
         ref_path = self._reference_path_for_mode()
+        align = bool(self.var_align_bullet_phase.get())
         if not ref_path and capped:
-            stacked = timed_paths_to_arrays(timed, cap_t_us, N_SAMPLES)
+            stacked = timed_paths_to_arrays(timed, cap_t_us, N_SAMPLES, align_to_first_motion=align)
             if self._metrics_mode == "meanPathRef":
                 ref_path = [(float(x), float(y)) for x, y in mean_path_from_stack(stacked)]
             elif ref >= 0:
@@ -427,7 +428,8 @@ class RecoilPathApp(tk.Tk):
         bullet_markers, bullet_label = self._bullet_markers_for_plot(cap_t_us)
         timed = [a.relative_points_timed() for a in self._attempts]
         cap_t_us = int(cap_ms * 1000) if cap_ms > 0 else 0
-        stacked = timed_paths_to_arrays(timed, cap_t_us, N_SAMPLES)
+        align = bool(self.var_align_bullet_phase.get())
+        stacked = timed_paths_to_arrays(timed, cap_t_us, N_SAMPLES, align_to_first_motion=align)
         mean_ref = [(float(x), float(y)) for x, y in mean_path_from_stack(stacked)]
         shortest_ref = (
             [(float(x), float(y)) for x, y in stacked[ref_idx]] if ref_idx >= 0 else []

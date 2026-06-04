@@ -240,7 +240,7 @@ static void macro_try_start_press_mode(int started_idx, key_modification_sequenc
 #endif
     macro_reset_mode_set_peers(started_idx, sequence->mode_set);
     reset_sequence(sequence, true);
-    sequence->schedule_anchor_us = esp_timer_get_time();
+    sequence->schedule_anchor_us = 0;
     sequence->schedule_phase_us = 0;
     macro_queue_start(sequence);
 }
@@ -565,18 +565,10 @@ void macro_sequence_callback(void* arg) {
 
 void start_sequence_with_delay(key_modification_sequence_t *sequence, uint32_t step_us)
 {
-    if (sequence->schedule_anchor_us == 0) {
-        sequence->schedule_phase_us = 0;
-        sequence->schedule_anchor_us = esp_timer_get_time();
-    }
     macro_arm_step_timer_abs(sequence, sequence->schedule_anchor_us + (int64_t)step_us, step_us);
 }
 
 void start_sequence(key_modification_sequence_t *sequence)
 {
-    if (sequence->schedule_anchor_us == 0) {
-        sequence->schedule_phase_us = 0;
-        sequence->schedule_anchor_us = esp_timer_get_time();
-    }
-    macro_arm_step_timer_abs(sequence, sequence->schedule_anchor_us, 0);
+    macro_arm_step_timer_abs(sequence, esp_timer_get_time(), 0);
 }

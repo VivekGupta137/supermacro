@@ -161,6 +161,12 @@ def save_metrics_csv(path: Path, metrics: Dict[str, Any]) -> None:
             w.writerow(["bulletStepInput", metrics.get("bulletStepInput", "")])
         if metrics.get("bulletStepUs") is not None:
             w.writerow(["bulletStepUs", metrics.get("bulletStepUs", "")])
+        if metrics.get("wallCapTimeMs") is not None:
+            w.writerow(["wallCapTimeMs", metrics.get("wallCapTimeMs", "")])
+        if metrics.get("macroCapTimeMs") is not None:
+            w.writerow(["macroCapTimeMs", metrics.get("macroCapTimeMs", "")])
+        if metrics.get("alignDeviationToFirstMotion") is not None:
+            w.writerow(["alignDeviationToFirstMotion", metrics.get("alignDeviationToFirstMotion", "")])
         w.writerow([])
 
         steps = metrics.get("perBulletStep") or []

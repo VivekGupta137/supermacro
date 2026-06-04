@@ -118,11 +118,32 @@ def shared_bullet_phase_us(
     *,
     align_to_first_motion: bool = True,
 ) -> int:
-    """One phase for all attempts so step markers share the same tick times."""
+    """Earliest first-motion time (legacy shared phase for bullet marker overlays)."""
     if not align_to_first_motion or not timed_paths:
         return 0
     phases = [first_motion_time_us(tp) for tp in timed_paths if tp]
     return min(phases) if phases else 0
+
+
+def macro_duration_at_cap_us(
+    timed_path: Sequence[TimedPoint], wall_cap_t_us: int
+) -> int:
+    """Macro duration from first motion through wall-clock cap."""
+    if not timed_path:
+        return 0
+    phase = first_motion_time_us(timed_path)
+    end_t = min(wall_cap_t_us, last_sample_time_us(timed_path))
+    return max(0, end_t - phase)
+
+
+def macro_cap_us(
+    timed_paths: Sequence[Sequence[TimedPoint]], wall_cap_t_us: int
+) -> int:
+    """Shortest macro duration among attempts at a shared wall-clock cap."""
+    if not timed_paths or wall_cap_t_us <= 0:
+        return 0
+    durations = [macro_duration_at_cap_us(tp, wall_cap_t_us) for tp in timed_paths if tp]
+    return min(durations) if durations else 0
 
 
 def path_bullet_phase_us(
@@ -294,16 +315,36 @@ def per_bullet_step_x_stats(
     *,
     align_to_first_motion: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Horizontal spread at each bullet tick (time-aligned, vs ref attempt X)."""
+    """Horizontal spread at each bullet tick (vs ref attempt X)."""
     if interval_us <= 0 or cap_t_us < 0 or not timed_paths:
         return []
-    phase_t_us = shared_bullet_phase_us(
-        timed_paths, align_to_first_motion=align_to_first_motion
-    )
     rows: List[Dict[str, Any]] = []
-    for step, t in enumerate(
-        bullet_fire_times_us(interval_us, cap_t_us, phase_t_us)
-    ):
+    if align_to_first_motion:
+        end_macro_us = macro_cap_us(timed_paths, cap_t_us)
+        step_times_macro = bullet_step_times_us(interval_us, end_macro_us, phase_t_us=0)
+        for step, t_macro in enumerate(step_times_macro):
+            xs = [
+                interpolate_timed_path(tp, first_motion_time_us(tp) + t_macro)[0]
+                for tp in timed_paths
+            ]
+            t_label_ms = t_macro / 1000.0
+            ref_x = xs[reference_index] if 0 <= reference_index < len(xs) else xs[0]
+            arr = np.array(xs, dtype=np.float64)
+            rows.append(
+                {
+                    "step": step,
+                    "tMs": round(t_label_ms, 3),
+                    "meanX": float(np.mean(arr)),
+                    "stdX": float(np.std(arr)),
+                    "rangeX": float(np.ptp(arr)),
+                    "refX": float(ref_x),
+                    "maxAbsDevX": float(np.max(np.abs(arr - ref_x))),
+                }
+            )
+        return rows
+
+    phase_t_us = 0
+    for step, t in enumerate(bullet_fire_times_us(interval_us, cap_t_us, phase_t_us)):
         xs = [interpolate_timed_path(tp, t)[0] for tp in timed_paths]
         ref_x = xs[reference_index] if 0 <= reference_index < len(xs) else xs[0]
         arr = np.array(xs, dtype=np.float64)
@@ -393,27 +434,40 @@ def timed_paths_to_arrays(
     *,
     align_to_first_motion: bool = True,
 ) -> np.ndarray:
-    """Resample at uniform time through cap; optionally shift to shared first-motion phase."""
+    """Resample at uniform time; per-attempt first-motion phase when aligned."""
     if cap_t_us <= 0:
         return np.zeros((len(timed_paths), n_samples, 2), dtype=np.float64)
-    phase_t_us = shared_bullet_phase_us(
-        timed_paths, align_to_first_motion=align_to_first_motion
-    )
-    macro_cap_us = max(0, cap_t_us - phase_t_us)
-    if macro_cap_us <= 0:
+    if align_to_first_motion:
+        resample_end_us = macro_cap_us(timed_paths, cap_t_us)
+    else:
+        resample_end_us = cap_t_us
+    if resample_end_us <= 0:
         return np.zeros((len(timed_paths), n_samples, 2), dtype=np.float64)
-    ts = np.linspace(0.0, float(macro_cap_us), n_samples)
+    ts = np.linspace(0.0, float(resample_end_us), n_samples)
     rows = []
     for tp in timed_paths:
         if not tp:
             rows.append(np.zeros((n_samples, 2), dtype=np.float64))
             continue
+        phase = first_motion_time_us(tp) if align_to_first_motion else 0
+        origin_x, origin_y = interpolate_timed_path(tp, phase) if align_to_first_motion else (0.0, 0.0)
         row = np.array(
-            [interpolate_timed_path(tp, int(phase_t_us + t)) for t in ts],
+            [
+                (
+                    interpolate_timed_path(tp, int(phase + t))[0] - origin_x,
+                    interpolate_timed_path(tp, int(phase + t))[1] - origin_y,
+                )
+                for t in ts
+            ],
             dtype=np.float64,
         )
         rows.append(row)
     return np.array(rows, dtype=np.float64)
+
+
+def stacked_arrays_to_paths(stacked: np.ndarray) -> List[List[Tuple[float, float]]]:
+    """Convert resampled stack back to xy polylines (for arc length / endpoints)."""
+    return [[(float(x), float(y)) for x, y in row] for row in stacked]
 
 
 def mean_path_from_stack(stacked: np.ndarray) -> np.ndarray:
@@ -546,25 +600,36 @@ def compute_session_metrics(
     ref_stack = stacked[ref_idx]
     mean_stack = mean_path_from_stack(stacked)
 
+    if align_bullet_to_first_motion:
+        metrics_cap_ms = macro_cap_us(timed_paths, cap_t_us) / 1000.0
+        metrics_capped = stacked_arrays_to_paths(stacked)
+    else:
+        metrics_cap_ms = cap_ms
+        metrics_capped = capped
+
+    first_motion_ms = [
+        round(first_motion_time_us(tp) / 1000.0, 3) if tp else 0.0 for tp in timed_paths
+    ]
+
     shortest_ref = _build_mode_metrics(
         mode="shortest_time_reference",
         reference_index=ref_idx,
-        capped=capped,
+        capped=metrics_capped,
         stacked=stacked,
         ref_stack=ref_stack,
         raw_durations_ms=raw_durations_ms,
         last_times_ms=last_times_ms,
-        cap_time_ms=cap_ms,
+        cap_time_ms=metrics_cap_ms,
     )
     mean_ref = _build_mode_metrics(
         mode="mean_path_reference",
         reference_index=None,
-        capped=capped,
+        capped=metrics_capped,
         stacked=stacked,
         ref_stack=mean_stack,
         raw_durations_ms=raw_durations_ms,
         last_times_ms=last_times_ms,
-        cap_time_ms=cap_ms,
+        cap_time_ms=metrics_cap_ms,
     )
 
     result: Dict[str, Any] = {
@@ -602,6 +667,11 @@ def compute_session_metrics(
         "durationCv": shortest_ref["durationCv"],
         "perAttempt": shortest_ref["perAttempt"],
     }
+    if align_bullet_to_first_motion:
+        result["alignDeviationToFirstMotion"] = True
+        result["macroCapTimeMs"] = metrics_cap_ms
+        result["wallCapTimeMs"] = cap_ms
+        result["firstMotionMs"] = first_motion_ms
     if bullet_step_us and bullet_step_us > 0:
         steps = per_bullet_step_x_stats(
             timed_paths,
@@ -633,15 +703,29 @@ def format_metrics_text(m: Dict[str, Any], mode: str = "shortestTimeRef") -> str
     ref_idx = block.get("referenceIndex")
     cap_ms = cap.get("capTimeMs", block.get("capTimeMs", m.get("capTimeMs", 0)))
 
+    macro_cap = m.get("macroCapTimeMs")
+    wall_cap = m.get("wallCapTimeMs", cap_ms)
+    aligned = bool(m.get("alignDeviationToFirstMotion"))
+    if aligned and macro_cap is not None:
+        cap_note = f"macro cap {macro_cap:.0f} ms (wall {wall_cap:.0f} ms, first-motion aligned)"
+    else:
+        cap_note = f"cap {cap_ms:.0f} ms"
+
     if mode == "meanPathRef":
-        header = f"Reference: mean path (cap {cap_ms:.0f} ms)"
+        header = f"Reference: mean path ({cap_note})"
     else:
         ref_num = (ref_idx if ref_idx is not None else m.get("shortestTimeIndex", 0)) + 1
-        header = f"Reference: attempt #{ref_num} — shortest time (cap {cap_ms:.0f} ms)"
+        header = f"Reference: attempt #{ref_num} — shortest time ({cap_note})"
 
     lines = [
         header,
         f"Attempts: {block.get('attemptCount', 0)}",
+    ]
+    first_motion = m.get("firstMotionMs")
+    if aligned and first_motion:
+        fm = ", ".join(f"#{i + 1}={t:.1f}ms" for i, t in enumerate(first_motion))
+        lines.append(f"First motion: {fm}")
+    lines.extend([
         f"Capped endpoint σ  X: {block.get('endpointStdX', 0):.2f} px   Y: {block.get('endpointStdY', 0):.2f} px",
         f"Capped endpoint range  X: {block.get('endpointRangeX', 0):.2f} px   Y: {block.get('endpointRangeY', 0):.2f} px",
         f"Path spread (time-aligned)  max σ X: {block.get('pathSpreadMaxXPx', 0):.2f} px   Y: {block.get('pathSpreadMaxYPx', 0):.2f} px",
@@ -650,7 +734,7 @@ def format_metrics_text(m: Dict[str, Any], mode: str = "shortestTimeRef") -> str
         f"Raw duration mean: {block.get('durationMeanMs', 0):.1f} ms   CV: {block.get('durationCv', 0):.4f}",
         "",
         "Per attempt (capped):",
-    ]
+    ])
     for i, p in enumerate(block.get("perAttempt", [])):
         tag = " ref" if p.get("isReference") else ""
         tail = p.get("excludedTailMs", 0)

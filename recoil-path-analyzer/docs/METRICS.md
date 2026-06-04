@@ -34,6 +34,16 @@ Longer sprays show `tail+Nms` in per-attempt lines — how much recording time w
 
 The same capped paths are analyzed against two different references:
 
+### First-motion alignment (default)
+
+When **Align steps to first motion** is checked (default), deviation metrics compare paths in **macro time** — time since each attempt's cursor first moved — not since button press. Each path is also re-zeroed at its first-motion position so macro time 0 is a common origin. This removes PC→ESP start latency and pre-threshold drip offset from RMS and per-bullet stats.
+
+- **Wall cap** still trims all sprays at the shortest press-to-release duration (for fair hold comparison).
+- **Macro cap** is the shortest macro duration at that wall cap; deviation is resampled over `0 … macro cap` per attempt.
+- Per-attempt **first motion** times are shown in the metrics panel when alignment is on.
+
+Uncheck the box to compare paths on raw wall-clock time (includes trigger latency variance).
+
 ### Shortest time (ref attempt)
 
 - The attempt with the shortest duration is the **reference path** (drawn slightly thicker, labeled `(ref)`).
